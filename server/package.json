@@ -1,0 +1,13 @@
+{
+  "name": "esp32-test-server",
+  "version": "0.1.0",
+  "description": "Local OTA and heartbeat server for ESP32",
+  "main": "server.js",
+  "private": true,
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

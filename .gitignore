@@ -1,0 +1,14 @@
+# ESP‑IDF build output
+build/
+sdkconfig
+*.elf
+*.bin
+*.map
+
+# VSCode
+.vscode/.cache/
+.vscode/extensions.json
+
+# Node server
+server/node_modules/
+server/package-lock.json

@@ -1,0 +1,21 @@
+CONFIG_IDF_TARGET="esp32"
+CONFIG_ESPTOOLPY_FLASHSIZE_4MB=y
+CONFIG_ESPTOOLPY_FLASHSIZE="4MB"
+
+# ---- OTA 支持 ----
+# 1) 使用自定义分区表 (双 OTA 槽), 见 partitions.csv
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# 2) 允许通过明文 HTTP 做 OTA。
+#    生产环境必须用 HTTPS + 服务器证书校验; 这里 ECS 是 http://...:8888, 仅供学习。
+#    风险: 传输不加密 + 无法验证服务器身份, 固件可被中间人替换。
+CONFIG_ESP_HTTPS_OTA_ALLOW_HTTP=y
+
+# 3) 回滚保护: 新固件首启后必须显式 esp_ota_mark_app_valid_cancel_rollback(),
+#    否则下次重启 bootloader 自动回退到旧槽。防止刷入变砖固件。
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
+# 4) 固件版本号来源: 用 CONFIG_APP_PROJECT_VER 显式指定, 便于服务端做版本比较。
+CONFIG_APP_PROJECT_VER_FROM_CONFIG=y
+CONFIG_APP_PROJECT_VER="1.0.1"

@@ -1,0 +1,18 @@
+# ESP32-WROOM-32 (4 MB) 双 OTA 分区表
+#
+# 布局 (offset 由 IDF 依次自动计算, 起点在 bootloader + 分区表之后 = 0x10000):
+#   nvs      0x4000   WiFi/PHY 校准 + 应用键值
+#   otadata  0x2000   记录当前应从哪个 OTA 槽启动 (双副本, 掉电安全)
+#   phy_init 0x1000   PHY 校准数据
+#   ota_0    0x1F0000 应用槽 0 (1.9375 MB)
+#   ota_1    0x1F0000 应用槽 1 (1.9375 MB)
+#
+# 没有 factory 槽: otadata 空白时 bootloader 默认启动 ota_0, 把两个槽都留给应用。
+# 0x10000 + 2*0x1F0000 = 0x3F0000 < 0x400000 (4 MB), 尾部留 0x10000 余量。
+#
+# Name,     Type, SubType,  Offset,  Size,     Flags
+nvs,        data, nvs,      ,        0x4000,
+otadata,    data, ota,      ,        0x2000,
+phy_init,   data, phy,      ,        0x1000,
+ota_0,      app,  ota_0,    ,        0x1F0000,
+ota_1,      app,  ota_1,    ,        0x1F0000,
