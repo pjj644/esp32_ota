@@ -68,12 +68,14 @@ static void ssd1306_write_data(SSD1306_t *dev, uint8_t *data, uint16_t len)
 
 uint8_t SSD1306_Probe(SSD1306_t *dev)
 {
-    /* 1) 先试硬件 I2C。F1 HAL 的 DevAddress 要传 8 位地址 (0x78/0x7A = 0x3C/0x3D << 1)。 */
-    if (HAL_I2C_IsDeviceReady(dev->hi2c, 0x78, 2, 100) == HAL_OK) {
+    /* 1) 先试硬件 I2C。探测方式与 OLED.c 的 OLED_CheckConnection 一致:
+     *    发 [0x00, 0xAE] 一帧 (0xAE 关显示, 探测无害)。F1 HAL 地址要传 0x78/0x7A。 */
+    uint8_t check[2] = {0x00, 0xAE};
+    if (HAL_I2C_Master_Transmit(dev->hi2c, 0x78, check, 2, 100) == HAL_OK) {
         dev->addr = 0x3C;
         return 1;
     }
-    if (HAL_I2C_IsDeviceReady(dev->hi2c, 0x7A, 2, 100) == HAL_OK) {
+    if (HAL_I2C_Master_Transmit(dev->hi2c, 0x7A, check, 2, 100) == HAL_OK) {
         dev->addr = 0x3D;
         return 1;
     }
@@ -209,22 +211,19 @@ uint8_t SSD1306_BusScanBitBang(uint8_t *found, uint8_t max_found)
 
 HAL_StatusTypeDef SSD1306_Init(SSD1306_t *dev)
 {
-    /* 与参考工程 LED3 (D:/tools1/LED3/MDK-ARM) 逐字节一致。
-     * 注意: 不发 0x20 0x02 (页寻址) 和 0xA4, 依赖复位默认;
-     * 之前发 0x20 0x02 被该 SSD1306 克隆解析异常, 疑似导致垂直重复。 */
+    /* 与参考工程 LED3 的根目录 OLED.c (真正工作的驱动, D:/tools1/LED3/MDK-ARM/OLED.c)
+     * 逐字节一致: 极简初始化, 不发 0xD5/0xD9/0xDB/0x20/0xA4, 对比度 0x7F。
+     * 之前复制的 LED3/oled.c 多了 0xD9 0xF1 (预充电过长) 疑似导致行叠影。 */
     static const uint8_t init_seq[] = {
         0xAE,             /* 关显示 */
-        0xD5, 0x80,       /* 显示时钟分频/振荡频率 */
         0xA8, 0x3F,       /* 多路复用: 1/64 行 */
         0xD3, 0x00,       /* 显示偏移 0 */
         0x40,             /* 起始行 0 */
-        0xA1,             /* 段重映射 (0xA0=正常, 0xA1=翻转) */
-        0xC8,             /* COM 扫描方向 (0xC0=正常, 0xC8=翻转) */
+        0xA1,             /* 段重映射 */
+        0xC8,             /* COM 扫描方向 */
         0xDA, 0x12,       /* COM 引脚配置: alternate, 64 行 */
-        0x81, 0xCF,       /* 对比度 */
+        0x81, 0x7F,       /* 对比度 */
         0xA6,             /* 正常显示 (非反显) */
-        0xD9, 0xF1,       /* 预充电周期 */
-        0xDB, 0x40,       /* VCOMH 取消选择电平 */
         0x8D, 0x14,       /* 电荷泵开启 */
         0xAF              /* 开显示 */
     };
