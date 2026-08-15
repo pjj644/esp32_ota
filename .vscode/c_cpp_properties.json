@@ -1,0 +1,34 @@
+{
+  "configurations": [
+    {
+      "name": "ESP32-IDF",
+      "compilerPath": "C:\\Espressif\\tools\\xtensa-esp-elf\\esp-15.2.0_20251204\\xtensa-esp-elf\\bin\\xtensa-esp32-elf-gcc.exe",
+      "compileCommands": "${workspaceFolder}/build/compile_commands.json",
+      "intelliSenseMode": "windows-gcc-x64",
+      "compilerArgs": [
+        "--sysroot=C:/Espressif/tools/xtensa-esp-elf/esp-15.2.0_20251204/xtensa-esp-elf"
+      ],
+      "includePath": [
+        "${workspaceFolder}/main",
+        "${workspaceFolder}/build/config",
+        "C:/Espressif/tools/xtensa-esp-elf/esp-15.2.0_20251204/xtensa-esp-elf/include",
+        "D:/esp32/.espressif/v6.0.1/esp-idf/components/**",
+        "D:/esp32/.espressif/v6.0.1/esp-idf/components/xtensa/esp32/include",
+        "D:/esp32/.espressif/v6.0.1/esp-idf/components/xtensa/include",
+        "D:/esp32/.espressif/v6.0.1/esp-idf/components/esp_common/include",
+        "D:/esp32/.espressif/v6.0.1/esp-idf/components/esp_hw_support/include",
+        "D:/esp32/.espressif/v6.0.1/esp-idf/components/freertos/FreeRTOS-Kernel/include",
+        "D:/esp32/.espressif/v6.0.1/esp-idf/components/freertos/config/include",
+        "D:/esp32/.espressif/v6.0.1/esp-idf/components/esp32/include"
+      ],
+      "forcedInclude": [
+        "${workspaceFolder}/build/config/sdkconfig.h"
+      ],
+      "defines": [
+        "ESP_PLATFORM",
+        "IDF_VER=\"v6.0.1\""
+      ]
+    }
+  ],
+  "version": 4
+}

@@ -839,6 +839,14 @@ scan_done:
     ESP_LOGI(TAG, "========== 协议暴力扫描结束 ==========");
 }
 
+/* UART2 正被刷写流程占用 (临时调试: 供 stm32_dbg 任务避让) */
+static volatile bool ota_busy = false;
+
+bool stm32_ota_is_busy(void)
+{
+    return ota_busy;
+}
+
 esp_err_t stm32_ota_check_and_update(const char *host, uint16_t port)
 {
     if (!host || host[0] == '\0' || port == 0) {
@@ -884,6 +892,7 @@ esp_err_t stm32_ota_check_and_update(const char *host, uint16_t port)
     }
 
     /* 4) 初始化串口与引脚, 进入 Bootloader */
+    ota_busy = true;
     pins_init();
     uart2_init();
     pins_drive_bootloader();
@@ -907,6 +916,7 @@ esp_err_t stm32_ota_check_and_update(const char *host, uint16_t port)
     /* 6) 无论成败, 释放 BOOT0 并复位 (半写固件也能下次重刷) */
     pins_release_and_reboot();
     vTaskDelay(pdMS_TO_TICKS(500));
+    ota_busy = false;
     free(image);
 
     if (err != ESP_OK) {

@@ -15,6 +15,7 @@
 #include "esp_system.h"
 #include "esp_idf_version.h"
 #include "esp_log.h"
+#include "driver/uart.h"
 #include "led.h"
 #include "wifi.h"
 #include "http_client.h"
@@ -38,6 +39,7 @@ static const char *TAG = "self_test";
 static void http_test_task(void *pvParameters);
 static void ota_task(void *pvParameters);
 static void stm32_ota_task(void *pvParameters);
+static void stm32_dbg_task(void *pvParameters);
 
 static void print_chip_info(void)
 {
@@ -51,7 +53,7 @@ static void print_chip_info(void)
     esp_read_mac(mac, ESP_MAC_WIFI_STA);
 
     ESP_LOGI(TAG, "================ ESP32-WROOM-32 SELF TEST ================");
-    ESP_LOGI(TAG, "*** OTA TEST BUILD — hello from v1.0.1 ***");
+    ESP_LOGI(TAG, "*** OTA TEST BUILD ***");
     ESP_LOGI(TAG, "IDF version : %s", esp_get_idf_version());
     ESP_LOGI(TAG, "Chip        : %s rev v%d.%d, %d core(s)",
              CONFIG_IDF_TARGET, chip.revision / 100, chip.revision % 100, chip.cores);
@@ -98,6 +100,8 @@ void app_main(void)
         xTaskCreate(ota_task, "ota_check", 8192, NULL, 4, NULL);
         /* STM32 OTA 检查任务: 下载整块固件到堆 + UART 刷写, 栈 8KB */
         xTaskCreate(stm32_ota_task, "stm32_ota", 8192, NULL, 3, NULL);
+        /* 临时调试: 非刷写期监听 STM32 USART1(115200) 应用输出 */
+        xTaskCreate(stm32_dbg_task, "stm32_dbg", 2048, NULL, 1, NULL);
     } else {
         ESP_LOGE(TAG, "WiFi unavailable: %s", esp_err_to_name(err));
     }
@@ -175,5 +179,51 @@ static void stm32_ota_task(void *pvParameters)
             ESP_LOGW(TAG, "STM32 OTA: 本轮未更新 (%s)", esp_err_to_name(err));
         }
         vTaskDelay(pdMS_TO_TICKS(STM32_OTA_CHECK_PERIOD_MS));
+    }
+}
+
+/*
+ * stm32_dbg_task (临时调试): STM32 应用 USART1 输出 115200 8N1, 而刷写用的
+ * UART2 是 9600 8E1。本任务在非刷写期把 UART2 重配为 115200 8N1, 把 STM32
+ * 的启动横幅 / OLED 状态消息读进 ESP32 日志, 用于诊断 OLED 不显示。
+ * 定位完成确认正常后应删除本任务。
+ */
+static void stm32_dbg_task(void *pvParameters)
+{
+    (void)pvParameters;
+    const uart_config_t cfg = {
+        .baud_rate = 115200,
+        .data_bits = UART_DATA_8_BITS,
+        .parity = UART_PARITY_DISABLE,
+        .stop_bits = UART_STOP_BITS_1,
+        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
+        .source_clk = UART_SCLK_DEFAULT,
+    };
+    uint8_t buf[160];
+
+    while (1) {
+        if (stm32_ota_is_busy()) {
+            vTaskDelay(pdMS_TO_TICKS(500));
+            continue;
+        }
+        esp_err_t err = uart_driver_install(STM32_UART_PORT, 1024, 1024, 0, NULL, 0);
+        /* 已安装时可能返回 ESP_ERR_INVALID_STATE 或 ESP_FAIL, 均视为正常, 继续用 */
+        if (err != ESP_OK && err != ESP_ERR_INVALID_STATE && err != ESP_FAIL) {
+            ESP_LOGW("stm32_dbg", "install: %s", esp_err_to_name(err));
+            vTaskDelay(pdMS_TO_TICKS(2000));
+            continue;
+        }
+        uart_param_config(STM32_UART_PORT, &cfg);
+        uart_set_pin(STM32_UART_PORT, STM32_UART_TX_PIN, STM32_UART_RX_PIN,
+                     UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
+        uart_flush_input(STM32_UART_PORT);
+
+        int n = uart_read_bytes(STM32_UART_PORT, buf, sizeof(buf) - 1,
+                                pdMS_TO_TICKS(2500));
+        if (n > 0) {
+            buf[n] = '\0';
+            ESP_LOGI("stm32_dbg", "STM32 says: %.*s", n, (char *)buf);
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

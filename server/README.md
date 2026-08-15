@@ -18,7 +18,7 @@
 
 ### 1. 查看并填写本地 IP
 
-双击 `show_ip.bat`，找到当前电脑的局域网 IPv4（如 `10.167.197.162`）。
+双击 `show_ip.bat`，找到当前电脑的局域网 IPv4（如 `192.168.1.11`）。
 
 然后打开 `../main/main.c`，把 `LOCAL_HOST` 改成这个 IP：
 
@@ -104,12 +104,12 @@ idf.py -p COM? flash monitor
 在 PowerShell 中执行：
 
 ```powershell
-curl http://10.167.197.162:8888/hello
-curl http://10.167.197.162:8888/ota/manifest
-curl http://10.167.197.162:8888/ota/stm32_manifest
+curl http://192.168.1.11:8888/hello
+curl http://192.168.1.11:8888/ota/manifest
+curl http://192.168.1.11:8888/ota/stm32_manifest
 ```
 
-请把 `10.167.197.162` 替换为当前电脑的局域网 IP。
+请把 `192.168.1.11` 替换为当前电脑的局域网 IP。
 
 ## 常见问题
 

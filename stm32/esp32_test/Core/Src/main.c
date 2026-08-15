@@ -18,12 +18,15 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "i2c.h"
 #include "usart.h"
 #include "gpio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include <stdio.h>
+#include <string.h>
+#include "ssd1306.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -35,7 +38,7 @@
 /* USER CODE BEGIN PD */
 
 /* 应用版本: 发布时与 server/firmware/stm32_version.json 保持一致 */
-#define APP_VERSION_STR  "1.0.0"
+#define APP_VERSION_STR  "1.0.14"
 
 /* USER CODE END PD */
 
@@ -47,7 +50,7 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
-
+static SSD1306_t g_oled;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -58,6 +61,73 @@ void SystemClock_Config(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+/* OLED 开机画面: 显示项目基本信息 (需先 MX_I2C1_Init) */
+static uint8_t g_bitbang_count = 0;
+static uint8_t g_bitbang_addrs[8];
+
+static void oled_show_boot_info(void)
+{
+  if (!SSD1306_Probe(&g_oled))
+  {
+    g_oled.present = 0;
+    static const char msg[] = "[OLED] SSD1306 not found (check I2C wiring)\r\n";
+    HAL_UART_Transmit(&huart1, (uint8_t *)msg, sizeof(msg) - 1, 1000);
+
+    /* 硬件 I2C 找不到 -> bit-bang 全地址扫描, 区分"外设问题"与"接线/从机问题" */
+    g_bitbang_count = SSD1306_BusScanBitBang(g_bitbang_addrs, 8);
+    char msg2[80];
+    if (g_bitbang_count > 0)
+    {
+      snprintf(msg2, sizeof(msg2), "[OLED] bitbang found %u addr(s):", g_bitbang_count);
+      HAL_UART_Transmit(&huart1, (uint8_t *)msg2, strlen(msg2), 1000);
+      for (uint8_t i = 0; i < g_bitbang_count && i < 8; i++)
+      {
+        snprintf(msg2, sizeof(msg2), " 0x%02X", g_bitbang_addrs[i]);
+        HAL_UART_Transmit(&huart1, (uint8_t *)msg2, strlen(msg2), 1000);
+      }
+      snprintf(msg2, sizeof(msg2), "\r\n");
+      HAL_UART_Transmit(&huart1, (uint8_t *)msg2, strlen(msg2), 1000);
+    }
+    else
+    {
+      static const char msg3[] = "[OLED] bitbang scan: NO device on bus\r\n";
+      HAL_UART_Transmit(&huart1, (uint8_t *)msg3, sizeof(msg3) - 1, 1000);
+    }
+    return;
+  }
+  g_oled.present = 1;
+  SSD1306_Init(&g_oled);
+
+  char line[24];
+  snprintf(line, sizeof(line), "APP v%s", APP_VERSION_STR);
+
+  SSD1306_Clear(&g_oled);
+  SSD1306_DrawString8x16(&g_oled, 0, 0, "ESP32-STM32 OTA");
+  SSD1306_DrawString8x16(&g_oled, 0, 16, line);
+  SSD1306_DrawString16(&g_oled, 0, 32, "OLED 测试成功");
+  SSD1306_Update(&g_oled);
+
+  static char okmsg[40];
+  snprintf(okmsg, sizeof(okmsg), "[OLED] found @0x%02X (%s)\r\n", g_oled.addr,
+           SSD1306_IsBitBang(&g_oled) ? "bitbang" : "hw-i2c");
+  HAL_UART_Transmit(&huart1, (uint8_t *)okmsg, strlen(okmsg), 1000);
+
+  SSD1306_Clear(&g_oled);
+  /* 32 行显示模式: 内容只放前 4 页 (2 行 16px) */
+  SSD1306_DrawString8x16(&g_oled, 0, 0, "ESP32-STM32 OTA");
+  SSD1306_DrawString8x16(&g_oled, 0, 16, line);
+  /* 页映射探针: 每页一个点 (y=0,8,16,24,32,40,48,56), 看它落在屏幕哪些行 */
+  SSD1306_DrawPixel(&g_oled, 1, 0, 1);
+  SSD1306_DrawPixel(&g_oled, 1, 8, 1);
+  SSD1306_DrawPixel(&g_oled, 1, 16, 1);
+  SSD1306_DrawPixel(&g_oled, 1, 24, 1);
+  SSD1306_DrawPixel(&g_oled, 1, 32, 1);
+  SSD1306_DrawPixel(&g_oled, 1, 40, 1);
+  SSD1306_DrawPixel(&g_oled, 1, 48, 1);
+  SSD1306_DrawPixel(&g_oled, 1, 56, 1);
+  SSD1306_Update(&g_oled);
+}
 
 /* USER CODE END 0 */
 
@@ -91,6 +161,7 @@ int main(void)
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
   MX_USART1_UART_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
   /* 启动横幅: ESP32 刷写完成后可通过 USART1(115200) 确认新固件已生效 */
@@ -100,15 +171,77 @@ int main(void)
     HAL_UART_Transmit(&huart1, banner, sizeof(banner) - 1, 1000);
   }
 
+  /* OLED: 显示项目信息 + 运行状态 (找不到 OLED 时静默跳过, 不阻塞) */
+  g_oled.hi2c = &hi2c1;
+  oled_show_boot_info();
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
   {
-    /* USER CODE END WHILE */
+    uint32_t boot_tick = HAL_GetTick();
+    uint32_t last_ui = 0, last_up = 0, last_ui_report = 0;
+    uint8_t blink = 0;
+    char line[24];
 
-    /* USER CODE BEGIN 3 */
+    while (1)
+    {
+      uint32_t now = HAL_GetTick();
+      if (now - last_ui >= 500)
+      {
+        last_ui = now;
+        blink = (uint8_t)(1 - blink);
+
+        if (now - last_up >= 1000)
+        {
+          last_up = now;
+          /* 第 2 行右侧: 运行时间 (页 3, 先清区再重画) */
+          SSD1306_FillRect(&g_oled, 104, 24, 24, 8, 0);
+          snprintf(line, sizeof(line), "%05lus", (now - boot_tick) / 1000);
+          SSD1306_DrawString8x16(&g_oled, 104, 24, line);
+        }
+
+        /* 右下角心跳方块 (页 3, 32 行屏的最末行) */
+        SSD1306_FillRect(&g_oled, 120, 16, 8, 8, blink);
+        if (g_oled.present)
+        {
+          SSD1306_Update(&g_oled);
+        }
+
+        /* 每 3s 上报 OLED 状态 (调试期, 经 USART1 给 ESP32 监听) */
+        if (now - last_ui_report >= 3000)
+        {
+          last_ui_report = now;
+          char failmsg[96];
+          if (!g_oled.present)
+          {
+            if (g_bitbang_count > 0)
+            {
+              snprintf(failmsg, sizeof(failmsg),
+                       "[OLED] probe fail, bitbang saw: 0x%02X\r\n",
+                       g_bitbang_addrs[0]);
+            }
+            else
+            {
+              snprintf(failmsg, sizeof(failmsg),
+                       "[OLED] probe fail, bitbang: no device\r\n");
+            }
+            HAL_UART_Transmit(&huart1, (uint8_t *)failmsg, strlen(failmsg), 1000);
+          }
+          else
+          {
+            /* 成功路径也周期性上报, 便于随时确认显示链路正常 */
+            snprintf(failmsg, sizeof(failmsg), "[OLED] ok @0x%02X (%s) errs=%lu\r\n",
+                     g_oled.addr,
+                     SSD1306_IsBitBang(&g_oled) ? "bitbang" : "hw-i2c",
+                     (unsigned long)g_oled.i2c_errs);
+            HAL_UART_Transmit(&huart1, (uint8_t *)failmsg, strlen(failmsg), 1000);
+          }
+        }
+      }
+      HAL_Delay(50);
+    }
   }
   /* USER CODE END 3 */
 }

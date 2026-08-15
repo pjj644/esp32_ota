@@ -38,6 +38,9 @@ extern "C" {
  */
 esp_err_t stm32_ota_check_and_update(const char *host, uint16_t port);
 
+/** 返回 UART2 是否正被 OTA 刷写流程占用 (临时调试用)。 */
+bool stm32_ota_is_busy(void);
+
 /** 诊断探针 (临时调试用): 逐阶段定位 STM32 未进入 Bootloader 的原因。 */
 void stm32_ota_debug_probe(void);
 
