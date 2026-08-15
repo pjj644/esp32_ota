@@ -51,6 +51,9 @@ $env:IDF_TOOLS_PATH="C:\Espressif\tools"
 - 接线固定：GPIO17→PA10(U1RX), GPIO16→PA9(U1TX), GPIO4→BOOT0, GPIO5→NRST, 共地。**别复用 GPIO4/5/16/17**。
 - STM32 固件是独立 CubeMX CMake 工程 `stm32/esp32_test/`，编译后用 `arm-none-eabi-objcopy -O binary esp32_test.elf esp32_test.bin` 生成 bin，再 `server/deploy_stm32.bat` 部署。
 - 刷完 STM32 复位，串口打印 `APP vX.Y.Z boot` 即生效。
+- **DAPLink 直连烧录（不经 OTA）**：openocd（IDF 工具链自带，`C:/Espressif/tools/openocd-esp32/v0.12.0-esp32-20260304/`）：
+  `openocd -s <scripts> -f interface/cmsis-dap.cfg -f target/stm32f1x.cfg -c "adapter speed 2000" -c "program stm32/esp32_test/build/Debug/esp32_test.elf verify reset exit"`
+  DAPLink = `VID_C251&PID_F001`（HID=SWD 烧录，VCOM=**COM3** @115200 收 STM32 USART1 日志，验证过 `[OLED] ok @0x3C (hw-i2c) errs=0`）。
 - 诊断探针保留在代码里：`stm32_ota_debug_probe()` / `stm32_ota_baud_probe()` / `stm32_ota_proto_probe()`（临时调试用，未接 app_main）。
 
 ## OLED（SSD1306, I2C1 = PB6/SCL, PB7/SDA）
