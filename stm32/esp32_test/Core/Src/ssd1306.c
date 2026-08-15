@@ -6,6 +6,7 @@
  */
 #include "ssd1306.h"
 #include "fonts.h"
+#include <string.h>
 
 #define SSD1306_I2C_TIMEOUT  100   /* ms */
 #define SSD1306_I2C_RETRIES  2     /* 忙/超时重试次数 */
@@ -33,10 +34,11 @@ static void ssd1306_write_cmd(SSD1306_t *dev, uint8_t cmd)
         bb_tx_frame(dev, 0x00, &cmd, 1);
         return;
     }
+    /* 与参考工程 LED3 一致: 用 HAL_I2C_Master_Transmit 发 [0x00, cmd] 一帧 */
+    uint8_t frame[2] = {0x00, cmd};
     for (int i = 0; i < SSD1306_I2C_RETRIES; i++) {
-        if (HAL_I2C_Mem_Write(dev->hi2c, (uint16_t)(dev->addr << 1), 0x00,
-                              I2C_MEMADD_SIZE_8BIT, &cmd, 1,
-                              SSD1306_I2C_TIMEOUT) == HAL_OK) {
+        if (HAL_I2C_Master_Transmit(dev->hi2c, (uint16_t)(dev->addr << 1), frame, 2,
+                                    SSD1306_I2C_TIMEOUT) == HAL_OK) {
             return;
         }
         HAL_Delay(2);
@@ -50,10 +52,13 @@ static void ssd1306_write_data(SSD1306_t *dev, uint8_t *data, uint16_t len)
         bb_tx_frame(dev, 0x40, data, len);
         return;
     }
+    /* 与参考工程 LED3 一致: 一次 Master_Transmit 发 [0x40, data...] 整帧 */
+    static uint8_t frame[SSD1306_WIDTH + 1];
+    frame[0] = 0x40;
+    memcpy(&frame[1], data, len);
     for (int i = 0; i < SSD1306_I2C_RETRIES; i++) {
-        if (HAL_I2C_Mem_Write(dev->hi2c, (uint16_t)(dev->addr << 1), 0x40,
-                              I2C_MEMADD_SIZE_8BIT, data, len,
-                              SSD1306_I2C_TIMEOUT) == HAL_OK) {
+        if (HAL_I2C_Master_Transmit(dev->hi2c, (uint16_t)(dev->addr << 1), frame,
+                                    (uint16_t)(len + 1), SSD1306_I2C_TIMEOUT) == HAL_OK) {
             return;
         }
         HAL_Delay(2);

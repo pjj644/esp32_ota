@@ -113,6 +113,24 @@ static void oled_show_boot_info(void)
   snprintf(okmsg, sizeof(okmsg), "[OLED] found @0x%02X (%s)\r\n", g_oled.addr,
            SSD1306_IsBitBang(&g_oled) ? "bitbang" : "hw-i2c");
   HAL_UART_Transmit(&huart1, (uint8_t *)okmsg, strlen(okmsg), 1000);
+
+  /* 临时诊断: 打印 buffer 各页前 8 字节, 验证缓冲是否被写成两遍 */
+  {
+    char dbg[80];
+    const char *tags[4] = {"p0:", "p2:", "p4:", "p6:"};
+    const uint32_t offs[4] = {0, 2 * 128, 4 * 128, 6 * 128};
+    for (int k = 0; k < 4; k++)
+    {
+      HAL_UART_Transmit(&huart1, (uint8_t *)"[DBG] ", 6, 1000);
+      HAL_UART_Transmit(&huart1, (uint8_t *)tags[k], 3, 1000);
+      for (int i = 0; i < 8; i++)
+      {
+        snprintf(dbg, sizeof(dbg), "%02X ", g_oled.buffer[offs[k] + i]);
+        HAL_UART_Transmit(&huart1, (uint8_t *)dbg, 3, 1000);
+      }
+      HAL_UART_Transmit(&huart1, (uint8_t *)"\r\n", 2, 1000);
+    }
+  }
 }
 
 /* USER CODE END 0 */
