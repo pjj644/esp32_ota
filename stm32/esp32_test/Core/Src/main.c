@@ -104,67 +104,17 @@ static void oled_show_boot_info(void)
   char line[24];
   snprintf(line, sizeof(line), "APP v%s", APP_VERSION_STR);
 
-  /* 诊断: 只画一行 TEST-A (页0-1), 验证重复是否只与"内容在页0-1"有关 */
+  /* 64 行整屏: 三行信息 (y=0/16/32), 最末页放运行时间/心跳 */
   SSD1306_Clear(&g_oled);
-  SSD1306_DrawString8x16(&g_oled, 0, 0, "TEST-A");
+  SSD1306_DrawString8x16(&g_oled, 0, 0, "ESP32-STM32 OTA");
+  SSD1306_DrawString8x16(&g_oled, 0, 16, line);
+  SSD1306_DrawString16(&g_oled, 0, 32, "OLED 测试成功");
   SSD1306_Update(&g_oled);
 
   static char okmsg[40];
   snprintf(okmsg, sizeof(okmsg), "[OLED] found @0x%02X (%s)\r\n", g_oled.addr,
            SSD1306_IsBitBang(&g_oled) ? "bitbang" : "hw-i2c");
   HAL_UART_Transmit(&huart1, (uint8_t *)okmsg, strlen(okmsg), 1000);
-
-  /* 临时诊断: 打印 buffer 各页前 8 字节, 验证缓冲是否被写成两遍 */
-  {
-    char dbg[80];
-    const char *tags[4] = {"p0:", "p2:", "p4:", "p6:"};
-    const uint32_t offs[4] = {0, 2 * 128, 4 * 128, 6 * 128};
-    for (int k = 0; k < 4; k++)
-    {
-      HAL_UART_Transmit(&huart1, (uint8_t *)"[DBG] ", 6, 1000);
-      HAL_UART_Transmit(&huart1, (uint8_t *)tags[k], 3, 1000);
-      for (int i = 0; i < 8; i++)
-      {
-        snprintf(dbg, sizeof(dbg), "%02X ", g_oled.buffer[offs[k] + i]);
-        HAL_UART_Transmit(&huart1, (uint8_t *)dbg, 3, 1000);
-      }
-      HAL_UART_Transmit(&huart1, (uint8_t *)"\r\n", 2, 1000);
-    }
-  }
-
-  /* 临时诊断: 回读 SSD1306 GDDRAM 页 0/1/4/5, 对比缓冲判断写入是否被屏重复 */
-  {
-    uint8_t rb[8];
-    char dbg[80];
-    const char *rtags[4] = {"R0:", "R1:", "R4:", "R5:"};
-    const uint8_t rpages[4] = {0, 1, 4, 5};
-    uint8_t cmd2[2];
-    for (int k = 0; k < 4; k++)
-    {
-      /* 设页 + 列 0 */
-      cmd2[0] = 0x00; cmd2[1] = (uint8_t)(0xB0 + rpages[k]);
-      HAL_I2C_Master_Transmit(g_oled.hi2c, (uint16_t)(g_oled.addr << 1), cmd2, 2, 100);
-      cmd2[1] = 0x00;
-      HAL_I2C_Master_Transmit(g_oled.hi2c, (uint16_t)(g_oled.addr << 1), cmd2, 2, 100);
-      cmd2[1] = 0x10;
-      HAL_I2C_Master_Transmit(g_oled.hi2c, (uint16_t)(g_oled.addr << 1), cmd2, 2, 100);
-      if (HAL_I2C_Master_Receive(g_oled.hi2c, (uint16_t)(g_oled.addr << 1) | 0x01, rb, 8, 100) == HAL_OK)
-      {
-        HAL_UART_Transmit(&huart1, (uint8_t *)"[RB] ", 5, 1000);
-        HAL_UART_Transmit(&huart1, (uint8_t *)rtags[k], 3, 1000);
-        for (int i = 0; i < 8; i++)
-        {
-          snprintf(dbg, sizeof(dbg), "%02X ", rb[i]);
-          HAL_UART_Transmit(&huart1, (uint8_t *)dbg, 3, 1000);
-        }
-        HAL_UART_Transmit(&huart1, (uint8_t *)"\r\n", 2, 1000);
-      }
-      else
-      {
-        HAL_UART_Transmit(&huart1, (uint8_t *)"[RB] READ FAIL\r\n", 17, 1000);
-      }
-    }
-  }
 }
 
 /* USER CODE END 0 */
@@ -202,7 +152,14 @@ int main(void)
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
-  /* OLED: 显示项目信息 (无开机横幅, 隔离横幅变量) */
+  /* 启动横幅: ESP32 刷写完成后可通过 USART1(115200) 确认新固件已生效 */
+  {
+    static uint8_t banner[] =
+        "\r\n[STM32 esp32_test] APP v" APP_VERSION_STR " boot\r\n";
+    HAL_UART_Transmit(&huart1, banner, sizeof(banner) - 1, 1000);
+  }
+
+  /* OLED: 显示项目信息 + 运行状态 (找不到 OLED 时静默跳过, 不阻塞) */
   g_oled.hi2c = &hi2c1;
   oled_show_boot_info();
 
@@ -235,12 +192,10 @@ int main(void)
 
         /* 右下角心跳方块 */
         SSD1306_FillRect(&g_oled, 120, 56, 8, 8, blink);
-#if 0  /* 临时禁用周期重传, 验证是否重传导致内容写两遍 (LED3 只传一次不重复) */
         if (g_oled.present)
         {
           SSD1306_Update(&g_oled);
         }
-#endif
 
         /* 每 3s 上报 OLED 状态 (调试期, 经 USART1 给 ESP32 监听) */
         if (now - last_ui_report >= 3000)

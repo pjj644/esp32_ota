@@ -285,16 +285,16 @@ void SSD1306_DrawChar8x16(SSD1306_t *dev, uint8_t x, uint8_t y, char ch)
     if (ch < 0x20 || ch > 0x7E) {
         ch = '?';
     }
+    /* font_ascii_8x16: 每字符 8 列, 每列 2 字节且上下相同 (8x8 列字节原样复制两份)。
+     * 因此这里取任一字节, 把 8x8 的每行纵向加倍成 16px。
+     * 之前的实现把同一字节画到行 0-7 和 8-15, 导致每字符出现两个叠置副本 = 整行重复。 */
     const uint8_t *glyph = font_ascii_8x16[ch - 0x20];
     for (uint8_t col = 0; col < 8; col++) {
-        uint8_t b0 = glyph[col * 2];
-        uint8_t b1 = glyph[col * 2 + 1];
+        uint8_t b = glyph[col * 2];
         for (uint8_t row = 0; row < 8; row++) {
-            if (b0 & (1u << row)) {
-                SSD1306_DrawPixel(dev, (uint8_t)(x + col), (uint8_t)(y + row), 1);
-            }
-            if (b1 & (1u << row)) {
-                SSD1306_DrawPixel(dev, (uint8_t)(x + col), (uint8_t)(y + row + 8), 1);
+            if (b & (1u << row)) {
+                SSD1306_DrawPixel(dev, (uint8_t)(x + col), (uint8_t)(y + row * 2), 1);
+                SSD1306_DrawPixel(dev, (uint8_t)(x + col), (uint8_t)(y + row * 2 + 1), 1);
             }
         }
     }
