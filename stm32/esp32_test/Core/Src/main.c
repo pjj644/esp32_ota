@@ -27,6 +27,8 @@
 #include <stdio.h>
 #include <string.h>
 #include "ssd1306.h"
+/* 对照测试: LED3 原版 OLED 驱动入口 */
+void oled_led3_test(void);
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -196,20 +198,13 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  MX_USART1_UART_Init();
+  /* 对照测试: 临时禁用 USART1 (排除其对 OLED 的影响), 只留 I2C1 */
+  // MX_USART1_UART_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
-  /* 启动横幅: ESP32 刷写完成后可通过 USART1(115200) 确认新固件已生效 */
-  {
-    static uint8_t banner[] =
-        "\r\n[STM32 esp32_test] APP v" APP_VERSION_STR " boot\r\n";
-    HAL_UART_Transmit(&huart1, banner, sizeof(banner) - 1, 1000);
-  }
-
-  /* OLED: 显示项目信息 + 运行状态 (找不到 OLED 时静默跳过, 不阻塞) */
-  g_oled.hi2c = &hi2c1;
-  oled_show_boot_info();
+  /* 对照测试: 用 LED3 原版 OLED.c + 字体驱动, 单行 TEST-A */
+  oled_led3_test();
 
   /* USER CODE END 2 */
 
