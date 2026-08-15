@@ -95,7 +95,7 @@ int main(void)
 
   /* 启动横幅: ESP32 刷写完成后可通过 USART1(115200) 确认新固件已生效 */
   {
-    static const uint8_t banner[] =
+    static uint8_t banner[] =
         "\r\n[STM32 esp32_test] APP v" APP_VERSION_STR " boot\r\n";
     HAL_UART_Transmit(&huart1, banner, sizeof(banner) - 1, 1000);
   }

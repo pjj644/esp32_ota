@@ -2,7 +2,7 @@
  * ESP32 -> STM32F103 OTA: 通过芯片 ROM 系统 Bootloader (AN3155) 刷写固件
  *
  * 原理: BOOT1=0 / BOOT0=1 后复位, STM32F103 进入 USART1 系统 Bootloader
- *       (@115200 8N1), 按 AN3155 协议接收命令:
+ *       (@115200 8E1 = 8 数据位 + 偶校验 + 1 停止位), 按 AN3155 协议接收命令:
  *         0x7F 同步     (Bootloader 回 0x79 = ACK / 0x1F = NACK)
  *         0x00 Get      (读 Bootloader 版本与支持命令表)
  *         0x43 Erase    (F103 中容量: 每页 1KB, 逐页擦除)
@@ -261,8 +261,9 @@ static esp_err_t uart2_init(void)
 {
     uart_config_t cfg = {
         .baud_rate = STM32_UART_BAUD,
+        /* AN3155: USART 系统 Bootloader 使用 8 数据位 + 偶校验 + 1 停止位 (8E1) */
         .data_bits = UART_DATA_8_BITS,
-        .parity = UART_PARITY_DISABLE,
+        .parity = UART_PARITY_EVEN,
         .stop_bits = UART_STOP_BITS_1,
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
         .source_clk = UART_SCLK_DEFAULT,
@@ -288,29 +289,20 @@ static esp_err_t uart2_init(void)
 
 /* ------------------------------------------------------------------ */
 /* AN3155 Bootloader 协议                                              */
+/* 实测帧式 (Get 可正常应答):                                           */
+/*   命令头   = [cmd][~cmd]          (1's 补码, 非 XOR, 实测确认)       */
+/*   数据段   = [data...][XOR 校验]  (XOR 覆盖数据段全部字节)            */
+/*   地址     = 4 字节大端 (实测该克隆 Bootloader 需 4B 地址段)          */
 
-/* 发送一帧 [cmd][params...][XOR 校验] 并等待 ACK。
- * xor_sum 与 param_len: 校验和覆盖 cmd + 所有参数。 */
-static esp_err_t boot_send_cmd(uint8_t cmd, uint8_t *params, size_t param_len,
-                               uint32_t ack_timeout_ms)
+/* 发送命令头 [cmd][~cmd] 并等待 ACK */
+static esp_err_t boot_send_cmd(uint8_t cmd, uint32_t ack_timeout_ms)
 {
-    uint8_t frame[WRITE_CHUNK_MAX + 8];
-    size_t n = 0;
-    uint8_t xor_sum = cmd;
-
-    frame[n++] = cmd;
-    for (size_t i = 0; i < param_len; i++) {
-        frame[n++] = params[i];
-        xor_sum ^= params[i];
-    }
-    frame[n++] = xor_sum;
-
-    int written = uart_write_bytes(STM32_UART_PORT, frame, n);
-    if (written != (int)n) {
-        ESP_LOGE(TAG, "uart_write_bytes: %d/%d", written, (int)n);
+    uint8_t frame[2] = { cmd, (uint8_t)~cmd };
+    int written = uart_write_bytes(STM32_UART_PORT, frame, sizeof(frame));
+    if (written != (int)sizeof(frame)) {
+        ESP_LOGE(TAG, "cmd 0x%02X 发送失败 (%d/%d)", cmd, written, (int)sizeof(frame));
         return ESP_FAIL;
     }
-
     uint8_t ack = 0;
     if (uart_read_bytes(STM32_UART_PORT, &ack, 1, pdMS_TO_TICKS(ack_timeout_ms)) != 1) {
         ESP_LOGW(TAG, "cmd 0x%02X 无应答 (超时 %lu ms)", cmd, (unsigned long)ack_timeout_ms);
@@ -327,34 +319,73 @@ static esp_err_t boot_send_cmd(uint8_t cmd, uint8_t *params, size_t param_len,
     return ESP_OK;
 }
 
-/* 同步: 发 0x7F 直到收到 ACK (最多重试 3 次) */
+/* 发送数据段 [data...][XOR] 并等待 ACK (data 可含地址/页表/固件数据) */
+static esp_err_t boot_send_payload(const uint8_t *data, size_t len, uint32_t ack_timeout_ms)
+{
+    /* 最大帧 = 1(N) + 256(数据) + 1(校验) = 258 */
+    uint8_t frame[WRITE_CHUNK_MAX + 2];
+    if (len > WRITE_CHUNK_MAX + 1) return ESP_ERR_INVALID_SIZE;
+
+    uint8_t xor_sum = 0;
+    for (size_t i = 0; i < len; i++) {
+        frame[i] = data[i];
+        xor_sum ^= data[i];
+    }
+    frame[len] = xor_sum;
+
+    int written = uart_write_bytes(STM32_UART_PORT, frame, len + 1);
+    if (written != (int)(len + 1)) {
+        ESP_LOGE(TAG, "payload 发送失败 (%d/%d)", written, (int)(len + 1));
+        return ESP_FAIL;
+    }
+    uint8_t ack = 0;
+    if (uart_read_bytes(STM32_UART_PORT, &ack, 1, pdMS_TO_TICKS(ack_timeout_ms)) != 1) {
+        ESP_LOGW(TAG, "payload(%d B) 无应答 (超时 %lu ms)", (int)len, (unsigned long)ack_timeout_ms);
+        return ESP_ERR_TIMEOUT;
+    }
+    if (ack != STM32_ACK) {
+        ESP_LOGW(TAG, "payload(%d B) 被拒 (0x%02X)", (int)len, ack);
+        return (ack == STM32_NACK) ? ESP_FAIL : ESP_FAIL;
+    }
+    return ESP_OK;
+}
+
+/* 同步: 发 0x7F, 跳过回显, 直到收到 ACK (最多 3 次) */
 static esp_err_t boot_sync(void)
 {
+    uint8_t sync = 0x7F;
     for (int i = 0; i < 3; i++) {
-        uint8_t rx = 0;
-        uint8_t sync = 0x7F;
+        uart_flush_input(STM32_UART_PORT);
         uart_write_bytes(STM32_UART_PORT, &sync, 1);
-        if (uart_read_bytes(STM32_UART_PORT, &rx, 1, pdMS_TO_TICKS(SYNC_TIMEOUT_MS)) == 1) {
-            if (rx == STM32_ACK) {
-                ESP_LOGI(TAG, "Bootloader 同步成功 (第 %d 次)", i + 1);
-                return ESP_OK;
+        uint8_t buf[8];
+        int total = 0;
+        TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(SYNC_TIMEOUT_MS);
+        while (total < (int)sizeof(buf) && xTaskGetTickCount() < deadline) {
+            int n = uart_read_bytes(STM32_UART_PORT, buf + total, sizeof(buf) - total,
+                                    pdMS_TO_TICKS(50));
+            if (n > 0) {
+                for (int j = total; j < total + n; j++) {
+                    if (buf[j] == STM32_ACK) {
+                        ESP_LOGI(TAG, "Bootloader 同步成功 (第 %d 次)", i + 1);
+                        return ESP_OK;
+                    }
+                }
+                total += n;
             }
-            ESP_LOGW(TAG, "同步应答异常 0x%02X, 重试", rx);
-        } else {
-            ESP_LOGW(TAG, "同步无应答, 重试");
         }
+        ESP_LOGW(TAG, "同步无 ACK (第 %d 次)", i + 1);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
     return ESP_ERR_TIMEOUT;
 }
 
-/* Get (0x00): 打印 Bootloader 版本与支持命令表 (仅调试定位用) */
+/* Get (0x00): 打印 Bootloader 版本与支持命令表 (调试用) */
 static esp_err_t boot_get_info(void)
 {
-    uint8_t frame[2] = { CMD_GET, CMD_GET };   /* 命令 + 校验 */
+    uint8_t frame[2] = { CMD_GET, (uint8_t)~CMD_GET };
     uart_write_bytes(STM32_UART_PORT, frame, sizeof(frame));
 
-    uint8_t buf[12];
+    uint8_t buf[16];
     int total = 0;
     TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(ACK_TIMEOUT_MS);
     while (total < (int)sizeof(buf) && xTaskGetTickCount() < deadline) {
@@ -362,35 +393,43 @@ static esp_err_t boot_get_info(void)
                                 pdMS_TO_TICKS(200));
         if (n > 0) total += n;
     }
-    if (total < 3) {
-        ESP_LOGW(TAG, "Get 应答不完整: %d bytes", total);
+    if (total < 3 || buf[0] != STM32_ACK) {
+        ESP_LOGW(TAG, "Get 应答异常 (%d bytes, 首字节 0x%02X)", total, total ? buf[0] : 0);
         return ESP_FAIL;
     }
-    if (buf[0] != STM32_ACK) {
-        ESP_LOGW(TAG, "Get 首字节异常 0x%02X", buf[0]);
-        return ESP_FAIL;
+    ESP_LOGI(TAG, "Bootloader 版本: 0x%02X", buf[2]);
+    char hex[64]; size_t hn = 0;
+    for (int i = 0; i < total; i++) {
+        int r = snprintf(hex + hn, sizeof(hex) - hn, "%02X ", buf[i]);
+        if (r <= 0 || hn + (size_t)r >= sizeof(hex)) break;
+        hn += (size_t)r;
     }
-    ESP_LOGI(TAG, "Bootloader 版本: 0x%02X", buf[1]);
-    ESP_LOGI(TAG, "支持命令表 (hex): %s", (char *)&buf[2]);
+    ESP_LOGI(TAG, "Get 原始响应: %s", hex);
     return ESP_OK;
 }
 
-/* 擦除: 逐页擦除 (F103 中容量 1KB/页), 擦 image_size 覆盖到的页数 */
+/* 擦除: 逐页擦除 (F103 中容量 1KB/页), 擦 image_size 覆盖到的页数。
+ * 帧: [43 BC] ->ACK-> [页码量-1][页码列表][XOR] ->ACK */
 static esp_err_t boot_erase_pages(size_t image_size)
 {
     size_t pages = (image_size + STM32_PAGE_SIZE - 1) / STM32_PAGE_SIZE;
     if (pages == 0) pages = 1;
 
-    uint8_t params[1 + 64];   /* N-1 + 页号列表, F103C8 最多 64 页 */
-    params[0] = (uint8_t)(pages - 1);
+    esp_err_t err = boot_send_cmd(CMD_ERASE, ACK_TIMEOUT_MS);
+    if (err != ESP_OK) return err;
+
+    uint8_t payload[1 + 64];   /* N-1 + 页号列表, F103C8 最多 64 页 */
+    payload[0] = (uint8_t)(pages - 1);
     for (size_t i = 0; i < pages; i++) {
-        params[1 + i] = (uint8_t)i;
+        payload[1 + i] = (uint8_t)i;
     }
     ESP_LOGI(TAG, "擦除 %d 页 (每页 1KB)...", (int)pages);
-    return boot_send_cmd(CMD_ERASE, params, 1 + pages, ERASE_TIMEOUT_MS);
+    return boot_send_payload(payload, 1 + pages, ERASE_TIMEOUT_MS);
 }
 
-/* 写入整片镜像: 按 256B 分块, 每块等 ACK; 末块补齐到 4 字节 (F1 写命令要求) */
+/* 写入整片镜像: 按 256B 分块, 每块:
+ * [31 CE] ->ACK-> [地址3B][XOR] ->ACK-> [N-1][数据][XOR] ->ACK;
+ * 末块补齐到 4 字节 (F1 写命令要求以字写入) */
 static esp_err_t boot_write_image(uint32_t base_addr, const uint8_t *data, size_t size)
 {
     ESP_LOGI(TAG, "写入 %d bytes 到 0x%08X ...", (int)size, (unsigned)base_addr);
@@ -400,44 +439,38 @@ static esp_err_t boot_write_image(uint32_t base_addr, const uint8_t *data, size_
     while (offset < size) {
         size_t chunk = size - offset;
         if (chunk > WRITE_CHUNK_MAX) chunk = WRITE_CHUNK_MAX;
-        /* F1: 块大小须为 4 的倍数 (写入以字为单位), 末块用 0xFF 补齐 */
         if (chunk % 4 != 0) {
             chunk = (chunk + 3) & ~(size_t)3;
         }
 
-        uint8_t frame[1 + 3 + 1 + 1 + WRITE_CHUNK_MAX];
-        size_t n = 0;
-        uint8_t xor_sum = 0;
+        esp_err_t err = boot_send_cmd(CMD_WRITE, ACK_TIMEOUT_MS);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "写块命令头失败 @0x%08X", (unsigned)(base_addr + offset));
+            return err;
+        }
 
-        frame[n++] = CMD_WRITE;                     xor_sum ^= CMD_WRITE;
         uint32_t addr = base_addr + offset;
-        frame[n++] = (uint8_t)(addr >> 16);         xor_sum ^= frame[n - 1];
-        frame[n++] = (uint8_t)(addr >> 8);          xor_sum ^= frame[n - 1];
-        frame[n++] = (uint8_t)addr;                 xor_sum ^= frame[n - 1];
-        frame[n++] = xor_sum;                       xor_sum = 0;   /* 独立校验段1 */
+        uint8_t addr_b[4] = {
+            (uint8_t)(addr >> 24),
+            (uint8_t)(addr >> 16),
+            (uint8_t)(addr >> 8),
+            (uint8_t)addr,
+        };
+        err = boot_send_payload(addr_b, sizeof(addr_b), ACK_TIMEOUT_MS);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "写块地址段失败 @0x%08X", (unsigned)addr);
+            return err;
+        }
 
-        frame[n++] = (uint8_t)(chunk - 1);          xor_sum ^= frame[n - 1];
+        uint8_t payload[1 + WRITE_CHUNK_MAX];
+        payload[0] = (uint8_t)(chunk - 1);
         for (size_t i = 0; i < chunk; i++) {
-            uint8_t b = (offset + i < size) ? data[offset + i] : 0xFF;
-            frame[n++] = b;
-            xor_sum ^= b;
+            payload[1 + i] = (offset + i < size) ? data[offset + i] : 0xFF;
         }
-        frame[n++] = xor_sum;                       /* 校验段2: 覆盖本块整帧 */
-
-        int written = uart_write_bytes(STM32_UART_PORT, frame, n);
-        if (written != (int)n) {
-            ESP_LOGE(TAG, "写块失败 @0x%08X", (unsigned)addr);
-            return ESP_FAIL;
-        }
-
-        uint8_t ack = 0;
-        if (uart_read_bytes(STM32_UART_PORT, &ack, 1, pdMS_TO_TICKS(ACK_TIMEOUT_MS)) != 1) {
-            ESP_LOGE(TAG, "写块 ACK 超时 @0x%08X", (unsigned)addr);
-            return ESP_ERR_TIMEOUT;
-        }
-        if (ack != STM32_ACK) {
-            ESP_LOGE(TAG, "写块被拒绝 (0x%02X) @0x%08X", ack, (unsigned)addr);
-            return ESP_FAIL;
+        err = boot_send_payload(payload, 1 + chunk, ACK_TIMEOUT_MS);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "写块数据段失败 @0x%08X", (unsigned)addr);
+            return err;
         }
 
         offset += chunk;
@@ -452,30 +485,359 @@ static esp_err_t boot_write_image(uint32_t base_addr, const uint8_t *data, size_
     return ESP_OK;
 }
 
-/* Go (0x21): 跳到应用地址 (不回 ACK, 直接执行) */
+/* Go (0x21): [21 DE] ->ACK-> [地址3B][XOR] ->ACK, 然后跳转 */
 static esp_err_t boot_go(uint32_t addr)
 {
-    uint8_t frame[4];
-    frame[0] = CMD_GO;
-    frame[1] = (uint8_t)(addr >> 16);
-    frame[2] = (uint8_t)(addr >> 8);
-    frame[3] = (uint8_t)addr;
-    uint8_t xor_sum = frame[0] ^ frame[1] ^ frame[2] ^ frame[3];
+    esp_err_t err = boot_send_cmd(CMD_GO, ACK_TIMEOUT_MS);
+    if (err != ESP_OK) return err;
 
-    uint8_t send[5] = { frame[0], frame[1], frame[2], frame[3], xor_sum };
-    int written = uart_write_bytes(STM32_UART_PORT, send, sizeof(send));
-    if (written != (int)sizeof(send)) {
-        ESP_LOGE(TAG, "Go 发送失败");
-        return ESP_FAIL;
+    uint8_t addr_b[4] = {
+        (uint8_t)(addr >> 24),
+        (uint8_t)(addr >> 16),
+        (uint8_t)(addr >> 8),
+        (uint8_t)addr,
+    };
+    err = boot_send_payload(addr_b, sizeof(addr_b), ACK_TIMEOUT_MS);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Go 地址段失败");
+        return err;
     }
-    /* F1 跳转后不回 ACK, 直接放行; 稍等让应用启动 */
+    /* F1 回 ACK 后跳转执行 */
     vTaskDelay(pdMS_TO_TICKS(100));
     ESP_LOGI(TAG, "Go 0x%08X 已发出", (unsigned)addr);
     return ESP_OK;
 }
 
 /* ------------------------------------------------------------------ */
-/* 对外入口                                                            */
+/* 诊断探针 (临时): 定位 STM32 未进入 Bootloader 的原因                 */
+
+static void probe_dump_rx(const char *label, uint32_t ms)
+{
+    uint8_t buf[384];
+    int total = 0;
+    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(ms);
+    while (xTaskGetTickCount() < deadline && total < (int)sizeof(buf) - 1) {
+        int n = uart_read_bytes(STM32_UART_PORT, buf + total, sizeof(buf) - 1 - total,
+                                pdMS_TO_TICKS(200));
+        if (n > 0) total += n;
+    }
+    if (total == 0) {
+        ESP_LOGI(TAG, "[probe] %s: 无数据 (%u ms)", label, (unsigned)ms);
+        return;
+    }
+    ESP_LOGI(TAG, "[probe] %s: 收到 %d bytes:", label, total);
+    char hex[96];
+    size_t hex_n = 0;
+    for (int i = 0; i < total; i++) {
+        int r = snprintf(hex + hex_n, sizeof(hex) - hex_n, "%02X ", buf[i]);
+        if (r <= 0 || hex_n + (size_t)r >= sizeof(hex)) {
+            ESP_LOGI(TAG, "[probe]   %s", hex);
+            hex_n = 0;
+            i--;   /* 重新处理当前字节 */
+            continue;
+        }
+        hex_n += (size_t)r;
+        if ((i + 1) % 16 == 0) {
+            ESP_LOGI(TAG, "[probe]   %s", hex);
+            hex_n = 0;
+        }
+    }
+    if (hex_n > 0) ESP_LOGI(TAG, "[probe]   %s", hex);
+}
+
+static void probe_pulse_nrst(void)
+{
+    gpio_set_level(STM32_NRST_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(NRST_PULSE_MS));
+    gpio_set_level(STM32_NRST_GPIO, 1);
+}
+
+void stm32_ota_debug_probe(void)
+{
+    pins_init();
+    uart2_init();
+    uart_flush_input(STM32_UART_PORT);
+
+    ESP_LOGI(TAG, "========== STM32 OTA 诊断探针 ==========");
+    ESP_LOGI(TAG, "[probe] GPIO4(BOOT0)=%d GPIO5(NRST)=%d",
+             gpio_get_level(STM32_BOOT0_GPIO), gpio_get_level(STM32_NRST_GPIO));
+
+    /* D1: 空闲监听 —— STM32 应用是否在周期发送数据? */
+    probe_dump_rx("D1 空闲监听 2s (BOOT0=0)", 2000);
+
+    /* D2: 不复位 BOOT0, 仅复位 —— NRST 是否生效? 应用是否会重启并打印横幅? */
+    probe_pulse_nrst();
+    vTaskDelay(pdMS_TO_TICKS(BOOTLOADER_WAKE_MS));
+    probe_dump_rx("D2 复位后监听 1s (BOOT0=0)", 1000);
+
+    /* D3: BOOT0=1 + 复位 —— 进 Bootloader? 进则无数据; 没进则应用横幅再次出现 */
+    gpio_set_level(STM32_BOOT0_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(BOOT0_SETUP_MS));
+    probe_pulse_nrst();
+    vTaskDelay(pdMS_TO_TICKS(BOOTLOADER_WAKE_MS));
+    probe_dump_rx("D3 BOOT0=1 复位后监听 1s", 1000);
+
+    /* D4: 发 0x7F 看应答 —— Bootloader 在等同步; 应用则无应答 */
+    uint8_t sync = 0x7F;
+    uart_write_bytes(STM32_UART_PORT, &sync, 1);
+    uint8_t ack = 0;
+    esp_err_t err = uart_read_bytes(STM32_UART_PORT, &ack, 1, pdMS_TO_TICKS(1000));
+    if (err == ESP_OK) {
+        ESP_LOGI(TAG, "[probe] D4 0x7F 应答: 0x%02X %s", ack,
+                 ack == STM32_ACK ? "(ACK, Bootloader 就绪!)" :
+                 ack == STM32_NACK ? "(NACK)" : "(未知)");
+    } else {
+        ESP_LOGI(TAG, "[probe] D4 0x7F 无应答");
+    }
+
+    /* 恢复: BOOT0=0 + 复位, 让应用回到正常状态 */
+    gpio_set_level(STM32_BOOT0_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(BOOT0_SETUP_MS));
+    probe_pulse_nrst();
+    vTaskDelay(pdMS_TO_TICKS(500));
+    ESP_LOGI(TAG, "========== 诊断探针结束 ==========");
+}
+
+/* ------------------------------------------------------------------ */
+/* 多波特率 Bootloader 探测 (临时调试用)                                */
+
+/* 协议应答: 0x7F 同步, 成功回 0x79 (ACK), 拒绝回 0x1F (NACK)。
+ * 候选波特率覆盖常见克隆芯片 (GD32 等) 的 Bootloader 兼容范围。 */
+void stm32_ota_baud_probe(void)
+{
+    static const int bauds[] = { 9600, 19200, 38400, 57600, 115200, 230400, 460800 };
+    static const int n_bauds = (int)(sizeof(bauds) / sizeof(bauds[0]));
+
+    pins_init();
+    uart2_init();
+
+    ESP_LOGI(TAG, "========== STM32 多波特率 Bootloader 探测 ==========");
+    for (int i = 0; i < n_bauds; i++) {
+        int baud = bauds[i];
+
+        /* 重新配置波特率 + 进 Bootloader */
+        uart_set_baudrate(STM32_UART_PORT, baud);
+        uart_flush_input(STM32_UART_PORT);
+        gpio_set_level(STM32_BOOT0_GPIO, 1);
+        vTaskDelay(pdMS_TO_TICKS(BOOT0_SETUP_MS));
+        gpio_set_level(STM32_NRST_GPIO, 0);
+        vTaskDelay(pdMS_TO_TICKS(NRST_PULSE_MS));
+        gpio_set_level(STM32_NRST_GPIO, 1);
+        vTaskDelay(pdMS_TO_TICKS(BOOTLOADER_WAKE_MS));
+        uart_flush_input(STM32_UART_PORT);
+
+        /* 两阶段同步: 0x7F -> ACK -> 0x7F -> ACK (GD32 克隆芯片必须两阶段) */
+        int phase = 0;   /* 0=无应答 1=阶段1完成 2=阶段2完成 */
+        uint8_t resp = 0;
+        for (int t = 0; t < 3; t++) {
+            uint8_t sync = 0x7F;
+            uart_write_bytes(STM32_UART_PORT, &sync, 1);
+            if (uart_read_bytes(STM32_UART_PORT, &resp, 1, pdMS_TO_TICKS(500)) != 1) {
+                continue;
+            }
+            if (resp == STM32_ACK) {
+                phase++;
+                if (phase >= 2) break;
+            } else if (resp == STM32_NACK) {
+                phase = -1;   /* 明确被拒 */
+                break;
+            } else {
+                phase = -2;   /* 异常字节 */
+                break;
+            }
+        }
+
+        if (phase >= 2) {
+            /* 同步完成! 发 Get (0x00) 确认协议可用并读回版本/命令表 */
+            ESP_LOGI(TAG, "[baud %5d] **** 两阶段同步成功 ****", baud);
+            uint8_t frame[2] = { CMD_GET, CMD_GET };
+            uart_write_bytes(STM32_UART_PORT, frame, sizeof(frame));
+            uint8_t rbuf[16];
+            int total = 0;
+            TickType_t dline = xTaskGetTickCount() + pdMS_TO_TICKS(1000);
+            while (total < (int)sizeof(rbuf) && xTaskGetTickCount() < dline) {
+                int n = uart_read_bytes(STM32_UART_PORT, rbuf + total,
+                                        sizeof(rbuf) - total, pdMS_TO_TICKS(200));
+                if (n > 0) total += n;
+            }
+            ESP_LOGI(TAG, "[baud %5d] Get 应答 %d bytes:", baud, total);
+            char hex[96]; size_t hn = 0;
+            for (int k = 0; k < total; k++) {
+                int r = snprintf(hex + hn, sizeof(hex) - hn, "%02X ", rbuf[k]);
+                if (r <= 0 || hn + (size_t)r >= sizeof(hex)) { hn = 0; k--; continue; }
+                hn += (size_t)r;
+            }
+            if (hn > 0) ESP_LOGI(TAG, "[baud %5d]   %s", baud, hex);
+            break;   /* 找到可用波特率, 结束 */
+        } else if (phase == -1) {
+            ESP_LOGI(TAG, "[baud %5d] Bootloader 在, 但 NACK 同步", baud);
+        } else if (phase == -2) {
+            ESP_LOGI(TAG, "[baud %5d] 收到异常字节 0x%02X", baud, resp);
+        } else {
+            ESP_LOGI(TAG, "[baud %5d] 无应答 (阶段%d)", baud, phase);
+        }
+    }
+
+    /* 恢复: BOOT0=0 + 复位, 波特率回到 115200 */
+    uart_set_baudrate(STM32_UART_PORT, STM32_UART_BAUD);
+    gpio_set_level(STM32_BOOT0_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(BOOT0_SETUP_MS));
+    gpio_set_level(STM32_NRST_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(NRST_PULSE_MS));
+    gpio_set_level(STM32_NRST_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    ESP_LOGI(TAG, "========== 多波特率探测结束 ==========");
+}
+
+/* ------------------------------------------------------------------ */
+/* 精细协议探针 (临时调试用): 9600 下逐条命令 dump 原始响应              */
+
+static void proto_rx_dump(uint32_t ms)
+{
+    uint8_t buf[64];
+    int total = 0;
+    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(ms);
+    while (total < (int)sizeof(buf) && xTaskGetTickCount() < deadline) {
+        int n = uart_read_bytes(STM32_UART_PORT, buf + total, sizeof(buf) - total,
+                                pdMS_TO_TICKS(100));
+        if (n > 0) total += n;
+    }
+    if (total == 0) {
+        ESP_LOGI(TAG, "[proto]   (无数据 %u ms)", (unsigned)ms);
+        return;
+    }
+    char hex[192]; size_t hn = 0;
+    for (int i = 0; i < total; i++) {
+        int r = snprintf(hex + hn, sizeof(hex) - hn, "%02X ", buf[i]);
+        if (r <= 0 || hn + (size_t)r >= sizeof(hex)) {
+            ESP_LOGI(TAG, "[proto]   %s", hex); hn = 0; i--; continue;
+        }
+        hn += (size_t)r;
+    }
+    if (hn > 0) ESP_LOGI(TAG, "[proto]   %s", hex);
+}
+
+void stm32_ota_proto_probe(void)
+{
+    pins_init();
+    uart2_init();
+    /* 已知 9600 可同步, 直接锁 9600 */
+    uart_set_baudrate(STM32_UART_PORT, 9600);
+
+    /* 进 Bootloader */
+    gpio_set_level(STM32_BOOT0_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(BOOT0_SETUP_MS));
+    gpio_set_level(STM32_NRST_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(NRST_PULSE_MS));
+    gpio_set_level(STM32_NRST_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(BOOTLOADER_WAKE_MS));
+    uart_flush_input(STM32_UART_PORT);
+
+    ESP_LOGI(TAG, "========== STM32 协议暴力扫描 v2 (9600) ==========");
+
+    /* 进 Bootloader, 同步并消费 ACK 残留 */
+    gpio_set_level(STM32_BOOT0_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(BOOT0_SETUP_MS));
+    gpio_set_level(STM32_NRST_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(NRST_PULSE_MS));
+    gpio_set_level(STM32_NRST_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(BOOTLOADER_WAKE_MS));
+    uart_flush_input(STM32_UART_PORT);
+    uint8_t b = 0x7F;
+    uart_write_bytes(STM32_UART_PORT, &b, 1);
+    {
+        uint8_t s_buf[8]; int s_n = 0;
+        TickType_t s_dl = xTaskGetTickCount() + pdMS_TO_TICKS(500);
+        while (s_n < (int)sizeof(s_buf) && xTaskGetTickCount() < s_dl) {
+            int ng = uart_read_bytes(STM32_UART_PORT, s_buf + s_n, sizeof(s_buf) - s_n, pdMS_TO_TICKS(50));
+            if (ng > 0) s_n += ng;
+        }
+        char s_hex[32]; size_t s_hn = 0;
+        for (int i = 0; i < s_n; i++) {
+            int r2 = snprintf(s_hex + s_hn, sizeof(s_hex) - s_hn, "%02X ", s_buf[i]);
+            if (r2 > 0 && s_hn + (size_t)r2 < sizeof(s_hex)) s_hn += (size_t)r2;
+        }
+        ESP_LOGI(TAG, "[scan] 同步残留(已消费): %s", s_hn ? s_hex : "(无)");
+    }
+
+    /* 命令集合: Get / GetVersion / GetID / ReadMem / Go / WriteMem / Erase / 扩展擦除 */
+    static const uint8_t cmds[] = { 0x00, 0x01, 0x02, 0x11, 0x21, 0x31, 0x43, 0x44 };
+    static const char *fnames[] = { "XOR", "CMPL", "SINGLE", "NUL", "FF", "7F", "TRIPLE", "SYNC2" };
+    int silence = 0;
+
+    for (size_t ci = 0; ci < sizeof(cmds); ci++) {
+        uint8_t c = cmds[ci];
+        uint8_t fr[8][4];
+        int    ln[8];
+        fr[0][0] = c; fr[0][1] = c;                    ln[0] = 2;  /* XOR      c c    */
+        fr[1][0] = c; fr[1][1] = (uint8_t)~c;          ln[1] = 2;  /* 补码     c ~c   */
+        fr[2][0] = c;                                  ln[2] = 1;  /* 单字节   c      */
+        fr[3][0] = c; fr[3][1] = 0x00;                 ln[3] = 2;  /* NUL      c 00   */
+        fr[4][0] = c; fr[4][1] = 0xFF;                 ln[4] = 2;  /* FF       c FF   */
+        fr[5][0] = c; fr[5][1] = 0x7F;                 ln[5] = 2;  /* 7F       c 7F   */
+        fr[6][0] = c; fr[6][1] = c; fr[6][2] = c;      ln[6] = 3;  /* 三次     c c c  */
+        fr[7][0] = 0x7F; fr[7][1] = c; fr[7][2] = c;   ln[7] = 3;  /* 双同步式 7F c c */
+
+        for (int fi = 0; fi < 8; fi++) {
+            if (silence >= 3) {
+                ESP_LOGI(TAG, "[scan] 连续静默, 重新进入 bootloader");
+                uart_flush_input(STM32_UART_PORT);
+                gpio_set_level(STM32_NRST_GPIO, 0);
+                vTaskDelay(pdMS_TO_TICKS(NRST_PULSE_MS));
+                gpio_set_level(STM32_NRST_GPIO, 1);
+                vTaskDelay(pdMS_TO_TICKS(BOOTLOADER_WAKE_MS));
+                uart_flush_input(STM32_UART_PORT);
+                b = 0x7F;
+                uart_write_bytes(STM32_UART_PORT, &b, 1);
+                uint8_t tmp[32]; int trn = 0;
+                TickType_t dl = xTaskGetTickCount() + pdMS_TO_TICKS(600);
+                while (trn < (int)sizeof(tmp) && xTaskGetTickCount() < dl) {
+                    int n = uart_read_bytes(STM32_UART_PORT, tmp + trn, sizeof(tmp) - trn, pdMS_TO_TICKS(50));
+                    if (n > 0) trn += n;
+                }
+                ESP_LOGI(TAG, "[scan]   重新同步完成 (消费 %d bytes)", trn);
+                silence = 0;
+            }
+
+            uart_flush_input(STM32_UART_PORT);
+            uart_write_bytes(STM32_UART_PORT, fr[fi], ln[fi]);
+
+            uint8_t r[16]; int rn = 0;
+            bool got_ack = false;
+            TickType_t dl = xTaskGetTickCount() + pdMS_TO_TICKS(300);
+            while (rn < (int)sizeof(r) && xTaskGetTickCount() < dl) {
+                int n = uart_read_bytes(STM32_UART_PORT, r + rn, sizeof(r) - rn, pdMS_TO_TICKS(40));
+                if (n > 0) rn += n;
+            }
+            /* 严格判定: 响应以 0x79 开头且后面不是 0x1F 才算命令 ACK */
+            if (rn >= 1 && r[0] == STM32_ACK && (rn == 1 || r[1] != 0x1F)) got_ack = true;
+            char hex[64]; size_t hn = 0;
+            for (int i = 0; i < rn; i++) {
+                int r2 = snprintf(hex + hn, sizeof(hex) - hn, "%02X ", r[i]);
+                if (r2 <= 0 || hn + (size_t)r2 >= sizeof(hex)) { hn = 0; i--; continue; }
+                hn += (size_t)r2;
+            }
+            ESP_LOGI(TAG, "[scan] cmd=%02X %-6s len=%d -> %s%s",
+                     c, fnames[fi], ln[fi], got_ack ? "!!! ACK !!!" : (rn ? "NACK/其他" : "静默"), hex);
+            if (got_ack) {
+                ESP_LOGI(TAG, "[scan] ======== 命中: cmd=%02X 帧式=%s 响应=%s ========", c, fnames[fi], hex);
+                goto scan_done;
+            }
+            if (rn == 0) silence++; else silence = 0;
+        }
+    }
+scan_done:
+
+    /* 恢复: BOOT0=0 + 复位, 波特率回 115200 */
+    uart_set_baudrate(STM32_UART_PORT, STM32_UART_BAUD);
+    gpio_set_level(STM32_BOOT0_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(BOOT0_SETUP_MS));
+    gpio_set_level(STM32_NRST_GPIO, 0);
+    vTaskDelay(pdMS_TO_TICKS(NRST_PULSE_MS));
+    gpio_set_level(STM32_NRST_GPIO, 1);
+    vTaskDelay(pdMS_TO_TICKS(500));
+    ESP_LOGI(TAG, "========== 协议暴力扫描结束 ==========");
+}
 
 esp_err_t stm32_ota_check_and_update(const char *host, uint16_t port)
 {

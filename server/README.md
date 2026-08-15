@@ -5,6 +5,8 @@
 - `GET /hello` —— 心跳测试，返回 `Hello from Local PC @ ...`
 - `GET /ota/manifest` —— 返回当前固件版本与下载 URL
 - `GET /ota/firmware.bin` —— 流式发送固件二进制文件
+- `GET /ota/stm32_manifest` —— 返回 STM32 固件版本与下载 URL（`firmware/stm32_version.json`）
+- `GET /ota/stm32.bin` —— 流式发送 STM32 固件（ESP32 经 UART 刷入 STM32）
 
 ## 前置条件
 
@@ -86,6 +88,17 @@ idf.py -p COM? flash monitor
 
 5. 等待 ESP32 下次 OTA 检查（最多 60 秒），就会下载新固件并自动重启。
 
+## 发布 STM32 固件（触发 ESP32 -> STM32 刷写）
+
+1. 修改 STM32 代码后编译出 `.bin`（如 `arm-none-eabi-objcopy -O binary build/esp32_test.elf esp32_test.bin`）。
+2. 运行 `deploy_stm32.bat`（可传 bin 路径参数），把固件复制为 `firmware/stm32.bin`。
+3. 手动更新 `firmware/stm32_version.json`（如 `{"version":"1.0.1"}`），版本必须比 ESP32
+   NVS 里记录的上次版本新才会触发刷写。
+4. 等待 ESP32 下次检查（最多 60 秒），ESP32 会下载 → 通过 UART（AN3155 协议）擦写 STM32
+   Flash → 复位，STM32 启动后串口打印 `APP vX.Y.Z boot` 即生效。
+
+> 接线、原理、调试步骤见仓库根目录 `STM32_WiFi_OTA_方案.md`。
+
 ## 手动验证服务器
 
 在 PowerShell 中执行：
@@ -93,6 +106,7 @@ idf.py -p COM? flash monitor
 ```powershell
 curl http://10.167.197.162:8888/hello
 curl http://10.167.197.162:8888/ota/manifest
+curl http://10.167.197.162:8888/ota/stm32_manifest
 ```
 
 请把 `10.167.197.162` 替换为当前电脑的局域网 IP。
