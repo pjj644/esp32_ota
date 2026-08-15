@@ -130,6 +130,40 @@ static void oled_show_boot_info(void)
       HAL_UART_Transmit(&huart1, (uint8_t *)"\r\n", 2, 1000);
     }
   }
+
+  /* 临时诊断: 回读 SSD1306 GDDRAM 页 0/1/4/5, 对比缓冲判断写入是否被屏重复 */
+  {
+    uint8_t rb[8];
+    char dbg[80];
+    const char *rtags[4] = {"R0:", "R1:", "R4:", "R5:"};
+    const uint8_t rpages[4] = {0, 1, 4, 5};
+    uint8_t cmd2[2];
+    for (int k = 0; k < 4; k++)
+    {
+      /* 设页 + 列 0 */
+      cmd2[0] = 0x00; cmd2[1] = (uint8_t)(0xB0 + rpages[k]);
+      HAL_I2C_Master_Transmit(g_oled.hi2c, (uint16_t)(g_oled.addr << 1), cmd2, 2, 100);
+      cmd2[1] = 0x00;
+      HAL_I2C_Master_Transmit(g_oled.hi2c, (uint16_t)(g_oled.addr << 1), cmd2, 2, 100);
+      cmd2[1] = 0x10;
+      HAL_I2C_Master_Transmit(g_oled.hi2c, (uint16_t)(g_oled.addr << 1), cmd2, 2, 100);
+      if (HAL_I2C_Master_Receive(g_oled.hi2c, (uint16_t)(g_oled.addr << 1) | 0x01, rb, 8, 100) == HAL_OK)
+      {
+        HAL_UART_Transmit(&huart1, (uint8_t *)"[RB] ", 5, 1000);
+        HAL_UART_Transmit(&huart1, (uint8_t *)rtags[k], 3, 1000);
+        for (int i = 0; i < 8; i++)
+        {
+          snprintf(dbg, sizeof(dbg), "%02X ", rb[i]);
+          HAL_UART_Transmit(&huart1, (uint8_t *)dbg, 3, 1000);
+        }
+        HAL_UART_Transmit(&huart1, (uint8_t *)"\r\n", 2, 1000);
+      }
+      else
+      {
+        HAL_UART_Transmit(&huart1, (uint8_t *)"[RB] READ FAIL\r\n", 17, 1000);
+      }
+    }
+  }
 }
 
 /* USER CODE END 0 */
