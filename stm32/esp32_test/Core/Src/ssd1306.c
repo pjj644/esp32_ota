@@ -212,8 +212,10 @@ uint8_t SSD1306_BusScanBitBang(uint8_t *found, uint8_t max_found)
 HAL_StatusTypeDef SSD1306_Init(SSD1306_t *dev)
 {
     /* 与参考工程 LED3 的根目录 OLED.c (真正工作的驱动, D:/tools1/LED3/MDK-ARM/OLED.c)
-     * 逐字节一致: 极简初始化, 不发 0xD5/0xD9/0xDB/0x20/0xA4, 对比度 0x7F。
-     * 之前复制的 LED3/oled.c 多了 0xD9 0xF1 (预充电过长) 疑似导致行叠影。 */
+     * 逐字节一致, 且与 OLED_Init 相同: 探测后延时 100ms, 只发命令不发空白帧。
+     * (OLED_Init 初始化后是直接画内容 + ShowFrame, 不做单独的 Clear/空白整屏上传) */
+    HAL_Delay(100);
+
     static const uint8_t init_seq[] = {
         0xAE,             /* 关显示 */
         0xA8, 0x3F,       /* 多路复用: 1/64 行 */
@@ -231,8 +233,7 @@ HAL_StatusTypeDef SSD1306_Init(SSD1306_t *dev)
     for (uint32_t i = 0; i < sizeof(init_seq); i++) {
         ssd1306_write_cmd(dev, init_seq[i]);
     }
-    SSD1306_Clear(dev);
-    return SSD1306_Update(dev);
+    return HAL_OK;
 }
 
 void SSD1306_Clear(SSD1306_t *dev)
