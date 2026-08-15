@@ -10,8 +10,10 @@
 #define SSD1306_I2C_TIMEOUT  100   /* ms */
 #define SSD1306_I2C_RETRIES  2     /* 忙/超时重试次数 */
 
-/* 通信方式: 0 = 硬件 I2C (正常 STM32), 1 = bit-bang 软件 I2C。
- * 实测该板 (GD32 克隆 F103) 硬件 I2C1 外设对 OLED 无 ACK, 自动降级 bit-bang。 */
+/* 通信方式: 0 = 硬件 I2C, 1 = bit-bang 软件 I2C。
+ * 注意: F1 HAL 的 DevAddress 必须传"左移一位的 8 位地址"(0x78), 不是 7 位 0x3C。
+ * 之前误传 0x3C 导致硬件 I2C 永远 NAK, 被误判为"GD32 硬件 I2C 坏"才引入 bit-bang。
+ * 现已修正地址, 硬件 I2C 正常; bit-bang 仅作兜底保留。 */
 static uint8_t ssd1306_use_bitbang = 0;
 
 uint8_t SSD1306_IsBitBang(const SSD1306_t *dev)
@@ -32,7 +34,7 @@ static void ssd1306_write_cmd(SSD1306_t *dev, uint8_t cmd)
         return;
     }
     for (int i = 0; i < SSD1306_I2C_RETRIES; i++) {
-        if (HAL_I2C_Mem_Write(dev->hi2c, dev->addr, 0x00,
+        if (HAL_I2C_Mem_Write(dev->hi2c, (uint16_t)(dev->addr << 1), 0x00,
                               I2C_MEMADD_SIZE_8BIT, &cmd, 1,
                               SSD1306_I2C_TIMEOUT) == HAL_OK) {
             return;
@@ -49,7 +51,7 @@ static void ssd1306_write_data(SSD1306_t *dev, uint8_t *data, uint16_t len)
         return;
     }
     for (int i = 0; i < SSD1306_I2C_RETRIES; i++) {
-        if (HAL_I2C_Mem_Write(dev->hi2c, dev->addr, 0x40,
+        if (HAL_I2C_Mem_Write(dev->hi2c, (uint16_t)(dev->addr << 1), 0x40,
                               I2C_MEMADD_SIZE_8BIT, data, len,
                               SSD1306_I2C_TIMEOUT) == HAL_OK) {
             return;
@@ -61,17 +63,17 @@ static void ssd1306_write_data(SSD1306_t *dev, uint8_t *data, uint16_t len)
 
 uint8_t SSD1306_Probe(SSD1306_t *dev)
 {
-    /* 1) 先试硬件 I2C (标准 STM32 的正常路径) */
-    if (HAL_I2C_IsDeviceReady(dev->hi2c, 0x3C, 2, 100) == HAL_OK) {
+    /* 1) 先试硬件 I2C。F1 HAL 的 DevAddress 要传 8 位地址 (0x78/0x7A = 0x3C/0x3D << 1)。 */
+    if (HAL_I2C_IsDeviceReady(dev->hi2c, 0x78, 2, 100) == HAL_OK) {
         dev->addr = 0x3C;
         return 1;
     }
-    if (HAL_I2C_IsDeviceReady(dev->hi2c, 0x3D, 2, 100) == HAL_OK) {
+    if (HAL_I2C_IsDeviceReady(dev->hi2c, 0x7A, 2, 100) == HAL_OK) {
         dev->addr = 0x3D;
         return 1;
     }
 
-    /* 2) 硬件不行 -> 切 bit-bang 软件 I2C 再试 (GD32 克隆外设异常时有用) */
+    /* 2) 硬件仍不行才兜底 bit-bang (地址按 7 位 << 1 发送) */
     ssd1306_use_bitbang = 1;
     ssd1306_bb_gpio_init();
     if (bb_probe_addr(0x3C)) {
@@ -205,14 +207,14 @@ HAL_StatusTypeDef SSD1306_Init(SSD1306_t *dev)
     static const uint8_t init_seq[] = {
         0xAE,             /* 关显示 */
         0xD5, 0x80,       /* 时钟分频 */
-        0xA8, 0x1F,       /* 多路复用: 1/32 行 (实测克隆屏 64 行配置会导致每行重复/叠影) */
+        0xA8, 0x3F,       /* 多路复用: 1/64 行 (与参考工程 LED3 一致) */
         0xD3, 0x00,       /* 显示偏移 0 */
         0x40,             /* 起始行 0 */
         0x8D, 0x14,       /* 电荷泵开启 */
         0x20, 0x02,       /* 页寻址模式 */
         0xA1,             /* 段重映射 (正常方向) */
         0xC8,             /* COM 扫描方向 */
-        0xDA, 0x12,       /* COM 引脚配置 (0x02 实测更花) */
+        0xDA, 0x12,       /* COM 引脚配置: alternate, 64 行 */
         0x81, 0xCF,       /* 对比度 */
         0xD9, 0xF1,       /* 预充电周期 */
         0xDB, 0x40,       /* VCOMH 取消选择电平 */
@@ -259,9 +261,8 @@ void SSD1306_DrawPixel(SSD1306_t *dev, uint8_t x, uint8_t y, uint8_t on)
 
 HAL_StatusTypeDef SSD1306_Update(SSD1306_t *dev)
 {
-    /* 实测克隆屏只有 4 页 RAM (32 行): 写页 4-7 会别名校回页 0-3, 造成内容重复。
-     * 因此只上传前 4 页。 */
-    uint8_t pages = 4;
+    /* 8 页整屏上传 (128x64)。之前误判面板为 32 行只发 4 页, 会丢下半屏。 */
+    uint8_t pages = SSD1306_HEIGHT / 8;
     for (uint8_t page = 0; page < pages; page++) {
         ssd1306_write_cmd(dev, (uint8_t)(0xB0 + page));
         ssd1306_write_cmd(dev, 0x00);   /* 列低地址 */

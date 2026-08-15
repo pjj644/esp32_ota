@@ -102,6 +102,7 @@ static void oled_show_boot_info(void)
   char line[24];
   snprintf(line, sizeof(line), "APP v%s", APP_VERSION_STR);
 
+  /* 64 行整屏: 三行信息 (y=0/16/32) */
   SSD1306_Clear(&g_oled);
   SSD1306_DrawString8x16(&g_oled, 0, 0, "ESP32-STM32 OTA");
   SSD1306_DrawString8x16(&g_oled, 0, 16, line);
@@ -112,21 +113,6 @@ static void oled_show_boot_info(void)
   snprintf(okmsg, sizeof(okmsg), "[OLED] found @0x%02X (%s)\r\n", g_oled.addr,
            SSD1306_IsBitBang(&g_oled) ? "bitbang" : "hw-i2c");
   HAL_UART_Transmit(&huart1, (uint8_t *)okmsg, strlen(okmsg), 1000);
-
-  SSD1306_Clear(&g_oled);
-  /* 32 行显示模式: 内容只放前 4 页 (2 行 16px) */
-  SSD1306_DrawString8x16(&g_oled, 0, 0, "ESP32-STM32 OTA");
-  SSD1306_DrawString8x16(&g_oled, 0, 16, line);
-  /* 页映射探针: 每页一个点 (y=0,8,16,24,32,40,48,56), 看它落在屏幕哪些行 */
-  SSD1306_DrawPixel(&g_oled, 1, 0, 1);
-  SSD1306_DrawPixel(&g_oled, 1, 8, 1);
-  SSD1306_DrawPixel(&g_oled, 1, 16, 1);
-  SSD1306_DrawPixel(&g_oled, 1, 24, 1);
-  SSD1306_DrawPixel(&g_oled, 1, 32, 1);
-  SSD1306_DrawPixel(&g_oled, 1, 40, 1);
-  SSD1306_DrawPixel(&g_oled, 1, 48, 1);
-  SSD1306_DrawPixel(&g_oled, 1, 56, 1);
-  SSD1306_Update(&g_oled);
 }
 
 /* USER CODE END 0 */
@@ -196,14 +182,14 @@ int main(void)
         if (now - last_up >= 1000)
         {
           last_up = now;
-          /* 第 2 行右侧: 运行时间 (页 3, 先清区再重画) */
-          SSD1306_FillRect(&g_oled, 104, 24, 24, 8, 0);
+          /* 底部右侧: 运行时间 (先清区再重画) */
+          SSD1306_FillRect(&g_oled, 72, 56, 48, 8, 0);
           snprintf(line, sizeof(line), "%05lus", (now - boot_tick) / 1000);
-          SSD1306_DrawString8x16(&g_oled, 104, 24, line);
+          SSD1306_DrawString8x16(&g_oled, 72, 56, line);
         }
 
-        /* 右下角心跳方块 (页 3, 32 行屏的最末行) */
-        SSD1306_FillRect(&g_oled, 120, 16, 8, 8, blink);
+        /* 右下角心跳方块 */
+        SSD1306_FillRect(&g_oled, 120, 56, 8, 8, blink);
         if (g_oled.present)
         {
           SSD1306_Update(&g_oled);

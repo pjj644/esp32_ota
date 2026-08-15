@@ -26,8 +26,8 @@ typedef struct {
     uint8_t  buffer[SSD1306_WIDTH * SSD1306_HEIGHT / 8];
 } SSD1306_t;
 
-/* 探测 0x3C/0x3D, 找到即记录 addr 并返回 1。
- * 先试硬件 I2C, 失败自动降级 bit-bang 软件 I2C (GD32 克隆外设异常兼容)。 */
+/* 探测 0x3C/0x3D, 找到即记录 addr (7 位) 并返回 1。
+ * 先试硬件 I2C, 失败才降级 bit-bang 软件 I2C 兜底。 */
 uint8_t SSD1306_Probe(SSD1306_t *dev);
 
 /* 返回当前通信方式: 1 = bit-bang 软件 I2C, 0 = 硬件 I2C */
