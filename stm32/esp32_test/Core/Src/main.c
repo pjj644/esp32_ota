@@ -198,13 +198,13 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  /* 对照测试: 逐步加回 USART1, 定位导致 OLED 重复的初始化 */
   MX_USART1_UART_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
-  /* 对照测试: 用 LED3 原版 OLED.c + 字体驱动, 单行 TEST-A */
-  oled_led3_test();
+  /* OLED: 显示项目信息 (无开机横幅, 隔离横幅变量) */
+  g_oled.hi2c = &hi2c1;
+  oled_show_boot_info();
 
   /* USER CODE END 2 */
 

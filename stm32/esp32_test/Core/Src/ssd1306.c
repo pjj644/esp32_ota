@@ -218,7 +218,6 @@ HAL_StatusTypeDef SSD1306_Init(SSD1306_t *dev)
 
     static const uint8_t init_seq[] = {
         0xAE,             /* 关显示 */
-        0x2E,             /* 关闭滚动 (每页 16 行周期重复疑似滚动残留, 无害命令) */
         0xA8, 0x3F,       /* 多路复用: 1/64 行 */
         0xD3, 0x00,       /* 显示偏移 0 */
         0x40,             /* 起始行 0 */
@@ -234,7 +233,9 @@ HAL_StatusTypeDef SSD1306_Init(SSD1306_t *dev)
     for (uint32_t i = 0; i < sizeof(init_seq); i++) {
         ssd1306_write_cmd(dev, init_seq[i]);
     }
-    return HAL_OK;
+    /* 与 LED3 OLED_Init 一致: 初始化后上传一帧空白 (清 GDDRAM) */
+    SSD1306_Clear(dev);
+    return SSD1306_Update(dev);
 }
 
 void SSD1306_Clear(SSD1306_t *dev)
