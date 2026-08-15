@@ -102,11 +102,10 @@ static void oled_show_boot_info(void)
   char line[24];
   snprintf(line, sizeof(line), "APP v%s", APP_VERSION_STR);
 
-  /* 64 行整屏: 三行信息 (y=0/16/32) */
+  /* 32 行面板: 两行 16px 信息 (y=0/16), 最末页放运行时间/心跳 */
   SSD1306_Clear(&g_oled);
   SSD1306_DrawString8x16(&g_oled, 0, 0, "ESP32-STM32 OTA");
   SSD1306_DrawString8x16(&g_oled, 0, 16, line);
-  SSD1306_DrawString16(&g_oled, 0, 32, "OLED 测试成功");
   SSD1306_Update(&g_oled);
 
   static char okmsg[40];
@@ -182,14 +181,14 @@ int main(void)
         if (now - last_up >= 1000)
         {
           last_up = now;
-          /* 底部右侧: 运行时间 (先清区再重画) */
-          SSD1306_FillRect(&g_oled, 72, 56, 48, 8, 0);
+          /* 最末页右侧: 运行时间 (先清区再重画) */
+          SSD1306_FillRect(&g_oled, 72, 24, 48, 8, 0);
           snprintf(line, sizeof(line), "%05lus", (now - boot_tick) / 1000);
-          SSD1306_DrawString8x16(&g_oled, 72, 56, line);
+          SSD1306_DrawString8x16(&g_oled, 72, 24, line);
         }
 
-        /* 右下角心跳方块 */
-        SSD1306_FillRect(&g_oled, 120, 56, 8, 8, blink);
+        /* 最末页右下角心跳方块 */
+        SSD1306_FillRect(&g_oled, 120, 24, 8, 8, blink);
         if (g_oled.present)
         {
           SSD1306_Update(&g_oled);

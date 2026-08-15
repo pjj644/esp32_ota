@@ -207,14 +207,14 @@ HAL_StatusTypeDef SSD1306_Init(SSD1306_t *dev)
     static const uint8_t init_seq[] = {
         0xAE,             /* 关显示 */
         0xD5, 0x80,       /* 时钟分频 */
-        0xA8, 0x3F,       /* 多路复用: 1/64 行 (与参考工程 LED3 一致) */
+        0xA8, 0x1F,       /* 多路复用: 1/32 行 (实测 1/64 下内容上下重复 -> 该屏为 32-COM) */
         0xD3, 0x00,       /* 显示偏移 0 */
         0x40,             /* 起始行 0 */
         0x8D, 0x14,       /* 电荷泵开启 */
         0x20, 0x02,       /* 页寻址模式 */
         0xA1,             /* 段重映射 (正常方向) */
         0xC8,             /* COM 扫描方向 */
-        0xDA, 0x12,       /* COM 引脚配置: alternate, 64 行 */
+        0xDA, 0x02,       /* COM 引脚配置: sequential, 32 行 */
         0x81, 0xCF,       /* 对比度 */
         0xD9, 0xF1,       /* 预充电周期 */
         0xDB, 0x40,       /* VCOMH 取消选择电平 */
@@ -261,8 +261,8 @@ void SSD1306_DrawPixel(SSD1306_t *dev, uint8_t x, uint8_t y, uint8_t on)
 
 HAL_StatusTypeDef SSD1306_Update(SSD1306_t *dev)
 {
-    /* 8 页整屏上传 (128x64)。之前误判面板为 32 行只发 4 页, 会丢下半屏。 */
-    uint8_t pages = SSD1306_HEIGHT / 8;
+    /* 32 行面板: 只上传前 4 页 (页 4-7 无对应物理行) */
+    uint8_t pages = 4;
     for (uint8_t page = 0; page < pages; page++) {
         ssd1306_write_cmd(dev, (uint8_t)(0xB0 + page));
         ssd1306_write_cmd(dev, 0x00);   /* 列低地址 */
