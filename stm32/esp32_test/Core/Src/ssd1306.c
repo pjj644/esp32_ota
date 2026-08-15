@@ -204,22 +204,23 @@ uint8_t SSD1306_BusScanBitBang(uint8_t *found, uint8_t max_found)
 
 HAL_StatusTypeDef SSD1306_Init(SSD1306_t *dev)
 {
+    /* 与参考工程 LED3 (D:/tools1/LED3/MDK-ARM) 逐字节一致。
+     * 注意: 不发 0x20 0x02 (页寻址) 和 0xA4, 依赖复位默认;
+     * 之前发 0x20 0x02 被该 SSD1306 克隆解析异常, 疑似导致垂直重复。 */
     static const uint8_t init_seq[] = {
         0xAE,             /* 关显示 */
-        0xD5, 0x80,       /* 时钟分频 */
-        0xA8, 0x1F,       /* 多路复用: 1/32 行 (实测 1/64 下内容上下重复 -> 该屏为 32-COM) */
+        0xD5, 0x80,       /* 显示时钟分频/振荡频率 */
+        0xA8, 0x3F,       /* 多路复用: 1/64 行 */
         0xD3, 0x00,       /* 显示偏移 0 */
         0x40,             /* 起始行 0 */
-        0x8D, 0x14,       /* 电荷泵开启 */
-        0x20, 0x02,       /* 页寻址模式 */
-        0xA1,             /* 段重映射 (正常方向) */
-        0xC8,             /* COM 扫描方向 */
-        0xDA, 0x02,       /* COM 引脚配置: sequential, 32 行 */
+        0xA1,             /* 段重映射 (0xA0=正常, 0xA1=翻转) */
+        0xC8,             /* COM 扫描方向 (0xC0=正常, 0xC8=翻转) */
+        0xDA, 0x12,       /* COM 引脚配置: alternate, 64 行 */
         0x81, 0xCF,       /* 对比度 */
+        0xA6,             /* 正常显示 (非反显) */
         0xD9, 0xF1,       /* 预充电周期 */
         0xDB, 0x40,       /* VCOMH 取消选择电平 */
-        0xA4,             /* 从 RAM 恢复显示 */
-        0xA6,             /* 正常显示 (非反显) */
+        0x8D, 0x14,       /* 电荷泵开启 */
         0xAF              /* 开显示 */
     };
 
@@ -261,8 +262,8 @@ void SSD1306_DrawPixel(SSD1306_t *dev, uint8_t x, uint8_t y, uint8_t on)
 
 HAL_StatusTypeDef SSD1306_Update(SSD1306_t *dev)
 {
-    /* 32 行面板: 只上传前 4 页 (页 4-7 无对应物理行) */
-    uint8_t pages = 4;
+    /* 8 页整屏上传 (与 LED3 一致, 64 行面板) */
+    uint8_t pages = SSD1306_HEIGHT / 8;
     for (uint8_t page = 0; page < pages; page++) {
         ssd1306_write_cmd(dev, (uint8_t)(0xB0 + page));
         ssd1306_write_cmd(dev, 0x00);   /* 列低地址 */
