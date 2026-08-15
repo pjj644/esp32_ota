@@ -190,10 +190,12 @@ int main(void)
 
         /* 右下角心跳方块 */
         SSD1306_FillRect(&g_oled, 120, 56, 8, 8, blink);
+#if 0  /* 临时禁用周期重传, 验证是否重传导致内容写两遍 (LED3 只传一次不重复) */
         if (g_oled.present)
         {
           SSD1306_Update(&g_oled);
         }
+#endif
 
         /* 每 3s 上报 OLED 状态 (调试期, 经 USART1 给 ESP32 监听) */
         if (now - last_ui_report >= 3000)
