@@ -5,6 +5,7 @@
  */
 #include "stm32f1xx_hal.h"
 #include <string.h>
+#include <stdio.h>
 #include <stdbool.h>
 
 extern I2C_HandleTypeDef hi2c1;
@@ -221,7 +222,7 @@ void OLED_PrintASCIIString(uint8_t x, uint8_t y, char *str, const ASCIIFont *fon
   }
 }
 
-/* ---- 对照测试入口: 单行 TEST-A + 无限循环, 无 USART1/开机横幅/周期重绘 ---- */
+/* ---- 对照测试入口: 单行 TEST-A + 主循环 (复刻 ssd1306 版 uptime/心跳缓冲写入, 不 Upload) ---- */
 void oled_led3_test(void)
 {
   uint8_t r = OLED_Init();
@@ -229,7 +230,33 @@ void oled_led3_test(void)
   OLED_PrintASCIIString(0, 0, "TEST-A", &afont16x8, OLED_COLOR_NORMAL);
   OLED_ShowFrame();
   (void)r;
-  while (1) {
-    HAL_Delay(1000);
+  uint32_t boot_tick = HAL_GetTick();
+  uint32_t last_ui = 0, last_up = 0;
+  uint8_t blink = 0;
+  char line[16];
+  while (1)
+  {
+    uint32_t now = HAL_GetTick();
+    if (now - last_ui >= 500)
+    {
+      last_ui = now;
+      blink = (uint8_t)(1 - blink);
+      if (now - last_up >= 1000)
+      {
+        last_up = now;
+        /* 清 uptime 区 (页 7 x=72..119) 再画 "00000s" */
+        for (uint8_t xx = 72; xx < 120; xx++)
+          for (uint8_t yy = 56; yy < 64; yy++)
+            OLED_SetPixel(xx, yy, OLED_COLOR_REVERSED);
+        snprintf(line, sizeof(line), "%05lus", (now - boot_tick) / 1000);
+        OLED_PrintASCIIString(72, 56, line, &afont16x8, OLED_COLOR_NORMAL);
+      }
+      /* 心跳方块 (页 7 x=120..127) */
+      for (uint8_t xx = 120; xx < 128; xx++)
+        for (uint8_t yy = 56; yy < 64; yy++)
+          OLED_SetPixel(xx, yy, blink ? OLED_COLOR_NORMAL : OLED_COLOR_REVERSED);
+      /* 与 ssd1306 版一致: 主循环不调用 OLED_ShowFrame (Update 禁用) */
+    }
+    HAL_Delay(50);
   }
 }
