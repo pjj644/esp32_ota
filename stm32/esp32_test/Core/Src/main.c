@@ -102,10 +102,9 @@ static void oled_show_boot_info(void)
   char line[24];
   snprintf(line, sizeof(line), "APP v%s", APP_VERSION_STR);
 
-  /* 诊断: 两行测试文本 (y=0 页0-1, y=32 页4-5), 看重复怎么映射 */
+  /* 诊断: 只画一行 TEST-A (页0-1), 验证重复是否只与"内容在页0-1"有关 */
   SSD1306_Clear(&g_oled);
   SSD1306_DrawString8x16(&g_oled, 0, 0, "TEST-A");
-  SSD1306_DrawString8x16(&g_oled, 0, 32, "TEST-B");
   SSD1306_Update(&g_oled);
 
   static char okmsg[40];
