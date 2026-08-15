@@ -102,11 +102,10 @@ static void oled_show_boot_info(void)
   char line[24];
   snprintf(line, sizeof(line), "APP v%s", APP_VERSION_STR);
 
-  /* 64 行整屏: 三行信息 (y=0/16/32), 最末页放运行时间/心跳 */
+  /* 诊断: 两行测试文本 (y=0 页0-1, y=32 页4-5), 看重复怎么映射 */
   SSD1306_Clear(&g_oled);
-  SSD1306_DrawString8x16(&g_oled, 0, 0, "ESP32-STM32 OTA");
-  SSD1306_DrawString8x16(&g_oled, 0, 16, line);
-  SSD1306_DrawString16(&g_oled, 0, 32, "OLED 测试成功");
+  SSD1306_DrawString8x16(&g_oled, 0, 0, "TEST-A");
+  SSD1306_DrawString8x16(&g_oled, 0, 32, "TEST-B");
   SSD1306_Update(&g_oled);
 
   static char okmsg[40];
