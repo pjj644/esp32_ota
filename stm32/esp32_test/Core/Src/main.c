@@ -198,8 +198,8 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
-  /* 对照测试: 临时禁用 USART1 (排除其对 OLED 的影响), 只留 I2C1 */
-  // MX_USART1_UART_Init();
+  /* 对照测试: 逐步加回 USART1, 定位导致 OLED 重复的初始化 */
+  MX_USART1_UART_Init();
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
