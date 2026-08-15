@@ -99,6 +99,12 @@ idf.py -p COM? flash monitor
 
 > 接线、原理、调试步骤见仓库根目录 `STM32_WiFi_OTA_方案.md`。
 
+## 修复记录 / 已知坑
+
+- **STM32 OLED 内容垂直重复（v1.0.15 修复）**：根因是 `stm32/esp32_test/Core/Src/fonts.c` 的 ASCII 字体把 8x8 列字节复制两份，加上旧的 `DrawChar8x16` 把同一字节画到行 0-7 和行 8-15，导致每行文字上下重复两遍。与屏/驱动/多路复用无关。修复：换用参考工程 LED3 的 `OLED_F8x16` 真 16px 字体，渲染按 `glyph[col]`（上半）/ `glyph[col+8]`（下半）。
+- **F1 HAL I2C 地址约定**：`HAL_I2C_*` 的 `DevAddress` 要传"左移一位的 8 位地址"（0x78 = 0x3C<<1），不是 7 位 0x3C。误传会导致硬件 I2C 永远 NAK（被误判成"GD32 硬件 I2C 坏"）。
+- 版本机制：改 `stm32/esp32_test/Core/Src/main.c` 的 `APP_VERSION_STR` 后，必须同步 `server/firmware/stm32_version.json`，否则 ESP32 侧 NVS 记录的新版本号不触发刷写。
+
 ## 手动验证服务器
 
 在 PowerShell 中执行：

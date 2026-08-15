@@ -11,29 +11,11 @@
 #define SSD1306_I2C_TIMEOUT  100   /* ms */
 #define SSD1306_I2C_RETRIES  2     /* 忙/超时重试次数 */
 
-/* 通信方式: 0 = 硬件 I2C, 1 = bit-bang 软件 I2C。
- * 注意: F1 HAL 的 DevAddress 必须传"左移一位的 8 位地址"(0x78), 不是 7 位 0x3C。
- * 之前误传 0x3C 导致硬件 I2C 永远 NAK, 被误判为"GD32 硬件 I2C 坏"才引入 bit-bang。
- * 现已修正地址, 硬件 I2C 正常; bit-bang 仅作兜底保留。 */
-static uint8_t ssd1306_use_bitbang = 0;
-
-uint8_t SSD1306_IsBitBang(const SSD1306_t *dev)
-{
-    (void)dev;
-    return ssd1306_use_bitbang;
-}
-
-/* bit-bang 层 (定义在本文件后半部) */
-static void ssd1306_bb_gpio_init(void);
-static uint8_t bb_probe_addr(uint8_t addr7);
-static void bb_tx_frame(SSD1306_t *dev, uint8_t ctrl, const uint8_t *data, uint16_t len);
+/* 注意: F1 HAL 的 DevAddress 必须传"左移一位的 8 位地址"(0x78), 不是 7 位 0x3C。
+ * 误传 0x3C 会让硬件 I2C 永远 NAK (曾被误判为"GD32 硬件 I2C 坏", 引出过 bit-bang 兜底)。 */
 
 static void ssd1306_write_cmd(SSD1306_t *dev, uint8_t cmd)
 {
-    if (ssd1306_use_bitbang) {
-        bb_tx_frame(dev, 0x00, &cmd, 1);
-        return;
-    }
     /* 与参考工程 LED3 一致: 用 HAL_I2C_Master_Transmit 发 [0x00, cmd] 一帧 */
     uint8_t frame[2] = {0x00, cmd};
     for (int i = 0; i < SSD1306_I2C_RETRIES; i++) {
@@ -43,15 +25,10 @@ static void ssd1306_write_cmd(SSD1306_t *dev, uint8_t cmd)
         }
         HAL_Delay(2);
     }
-    dev->i2c_errs++;
 }
 
 static void ssd1306_write_data(SSD1306_t *dev, uint8_t *data, uint16_t len)
 {
-    if (ssd1306_use_bitbang) {
-        bb_tx_frame(dev, 0x40, data, len);
-        return;
-    }
     /* 与参考工程 LED3 一致: 一次 Master_Transmit 发 [0x40, data...] 整帧 */
     static uint8_t frame[SSD1306_WIDTH + 1];
     frame[0] = 0x40;
@@ -63,13 +40,12 @@ static void ssd1306_write_data(SSD1306_t *dev, uint8_t *data, uint16_t len)
         }
         HAL_Delay(2);
     }
-    dev->i2c_errs++;
 }
 
 uint8_t SSD1306_Probe(SSD1306_t *dev)
 {
-    /* 1) 先试硬件 I2C。探测方式与 OLED.c 的 OLED_CheckConnection 一致:
-     *    发 [0x00, 0xAE] 一帧 (0xAE 关显示, 探测无害)。F1 HAL 地址要传 0x78/0x7A。 */
+    /* 与 LED3 OLED_CheckConnection 一致: 发 [0x00, 0xAE] 一帧探测 (0xAE=关显示, 无害)。
+     * F1 HAL 地址传 0x78/0x7A (= 0x3C/0x3D << 1)。 */
     uint8_t check[2] = {0x00, 0xAE};
     if (HAL_I2C_Master_Transmit(dev->hi2c, 0x78, check, 2, 100) == HAL_OK) {
         dev->addr = 0x3C;
@@ -79,134 +55,7 @@ uint8_t SSD1306_Probe(SSD1306_t *dev)
         dev->addr = 0x3D;
         return 1;
     }
-
-    /* 2) 硬件仍不行才兜底 bit-bang (地址按 7 位 << 1 发送) */
-    ssd1306_use_bitbang = 1;
-    ssd1306_bb_gpio_init();
-    if (bb_probe_addr(0x3C)) {
-        dev->addr = 0x3C;
-        return 1;
-    }
-    if (bb_probe_addr(0x3D)) {
-        dev->addr = 0x3D;
-        return 1;
-    }
-    ssd1306_use_bitbang = 0;
     return 0;
-}
-
-/* ---- 软件 I2C (bit-bang) 传输层: 硬件 I2C 外设异常时替代 ---- */
-#define BB_SCL_PIN   GPIO_PIN_6
-#define BB_SDA_PIN   GPIO_PIN_7
-
-static void bb_delay(void)
-{
-    volatile uint32_t n = 120;   /* ~2-3us @72MHz */
-    while (n--) {
-        __NOP();
-    }
-}
-
-static void bb_scl_hi(void) { GPIOB->BSRR = BB_SCL_PIN; }
-static void bb_scl_lo(void) { GPIOB->BRR  = BB_SCL_PIN; }
-static void bb_sda_hi(void) { GPIOB->BSRR = BB_SDA_PIN; }
-static void bb_sda_lo(void) { GPIOB->BRR  = BB_SDA_PIN; }
-
-static uint8_t bb_sda_read(void)
-{
-    return (GPIOB->IDR & BB_SDA_PIN) ? 1 : 0;
-}
-
-static void bb_start(void)
-{
-    bb_sda_hi(); bb_scl_hi(); bb_delay();
-    bb_sda_lo(); bb_delay();
-    bb_scl_lo(); bb_delay();
-}
-
-static void bb_stop(void)
-{
-    bb_sda_lo(); bb_delay();
-    bb_scl_hi(); bb_delay();
-    bb_sda_hi(); bb_delay();
-}
-
-/* 发 1 字节 (MSB 先), 返回 1 = 从机 ACK */
-static uint8_t bb_write_byte(uint8_t b)
-{
-    for (int i = 0; i < 8; i++) {
-        if (b & 0x80) { bb_sda_hi(); } else { bb_sda_lo(); }
-        b <<= 1;
-        bb_scl_hi(); bb_delay();
-        bb_scl_lo(); bb_delay();
-    }
-    bb_sda_hi();               /* 释放 SDA 等 ACK */
-    bb_delay();
-    bb_scl_hi(); bb_delay();
-    uint8_t ack = bb_sda_read() ? 0 : 1;
-    bb_scl_lo(); bb_delay();
-    return ack;
-}
-
-/* 复位 I2C1 外设, 把 PB6/PB7 切成通用开漏输出 */
-static void ssd1306_bb_gpio_init(void)
-{
-    __HAL_RCC_I2C1_FORCE_RESET();
-    __HAL_RCC_I2C1_RELEASE_RESET();
-    GPIO_InitTypeDef g = {0};
-    g.Pin = BB_SCL_PIN | BB_SDA_PIN;
-    g.Mode = GPIO_MODE_OUTPUT_OD;
-    g.Speed = GPIO_SPEED_FREQ_HIGH;
-    HAL_GPIO_Init(GPIOB, &g);
-    bb_scl_hi(); bb_sda_hi(); bb_delay();
-}
-
-/* 探测单地址: START + 地址字节, 有 ACK 即命中 */
-static uint8_t bb_probe_addr(uint8_t addr7)
-{
-    bb_start();
-    uint8_t ack = bb_write_byte((uint8_t)(addr7 << 1));
-    bb_stop();
-    return ack;
-}
-
-/* 传输一帧: [addr|W][ctrl][data...] (控制字节 0x00=命令 / 0x40=数据) */
-static void bb_tx_frame(SSD1306_t *dev, uint8_t ctrl, const uint8_t *data, uint16_t len)
-{
-    bb_start();
-    if (!bb_write_byte((uint8_t)(dev->addr << 1))) {
-        dev->i2c_errs++;
-        bb_stop();
-        return;
-    }
-    if (!bb_write_byte(ctrl)) {
-        dev->i2c_errs++;
-        bb_stop();
-        return;
-    }
-    for (uint16_t i = 0; i < len; i++) {
-        if (!bb_write_byte(data[i])) {
-            dev->i2c_errs++;
-            break;
-        }
-    }
-    bb_stop();
-}
-
-/* 全地址扫描 (诊断用): 返回 ACK 的地址数, found 回填前 max_found 个 */
-uint8_t SSD1306_BusScanBitBang(uint8_t *found, uint8_t max_found)
-{
-    ssd1306_bb_gpio_init();
-    uint8_t n = 0;
-    for (uint16_t addr = 0x01; addr < 0x80; addr++) {
-        if (bb_probe_addr((uint8_t)addr)) {
-            if (n < max_found) {
-                found[n] = (uint8_t)addr;
-            }
-            n++;
-        }
-    }
-    return n;
 }
 
 HAL_StatusTypeDef SSD1306_Init(SSD1306_t *dev)
@@ -285,16 +134,18 @@ void SSD1306_DrawChar8x16(SSD1306_t *dev, uint8_t x, uint8_t y, char ch)
     if (ch < 0x20 || ch > 0x7E) {
         ch = '?';
     }
-    /* font_ascii_8x16: 每字符 8 列, 每列 2 字节且上下相同 (8x8 列字节原样复制两份)。
-     * 因此这里取任一字节, 把 8x8 的每行纵向加倍成 16px。
-     * 之前的实现把同一字节画到行 0-7 和 8-15, 导致每字符出现两个叠置副本 = 整行重复。 */
+    /* font_ascii_8x16 (LED3 OLED_F8x16 布局): 每字符 16 字节, 前 8 字节=8 列上半(行0-7),
+     * 后 8 字节=8 列下半(行8-15), bit0 = 顶行。 */
     const uint8_t *glyph = font_ascii_8x16[ch - 0x20];
     for (uint8_t col = 0; col < 8; col++) {
-        uint8_t b = glyph[col * 2];
+        uint8_t b0 = glyph[col];
+        uint8_t b1 = glyph[col + 8];
         for (uint8_t row = 0; row < 8; row++) {
-            if (b & (1u << row)) {
-                SSD1306_DrawPixel(dev, (uint8_t)(x + col), (uint8_t)(y + row * 2), 1);
-                SSD1306_DrawPixel(dev, (uint8_t)(x + col), (uint8_t)(y + row * 2 + 1), 1);
+            if (b0 & (1u << row)) {
+                SSD1306_DrawPixel(dev, (uint8_t)(x + col), (uint8_t)(y + row), 1);
+            }
+            if (b1 & (1u << row)) {
+                SSD1306_DrawPixel(dev, (uint8_t)(x + col), (uint8_t)(y + row + 8), 1);
             }
         }
     }

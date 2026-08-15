@@ -20,23 +20,13 @@
 
 typedef struct {
     I2C_HandleTypeDef *hi2c;
-    uint8_t  addr;                 /* 探测到的从机地址 (0x3C / 0x3D) */
+    uint8_t  addr;                 /* 探测到的从机地址 (0x3C / 0x3D, 7 位) */
     uint8_t  present;              /* 1 = 探测成功, 0 = 无 OLED */
-    uint32_t i2c_errs;             /* 写命令/数据累计失败次数 (调试用) */
     uint8_t  buffer[SSD1306_WIDTH * SSD1306_HEIGHT / 8];
 } SSD1306_t;
 
-/* 探测 0x3C/0x3D, 找到即记录 addr (7 位) 并返回 1。
- * 先试硬件 I2C, 失败才降级 bit-bang 软件 I2C 兜底。 */
+/* 探测 0x3C/0x3D, 找到即记录 addr (7 位) 并返回 1。硬件 I2C 即可。 */
 uint8_t SSD1306_Probe(SSD1306_t *dev);
-
-/* 返回当前通信方式: 1 = bit-bang 软件 I2C, 0 = 硬件 I2C */
-uint8_t SSD1306_IsBitBang(const SSD1306_t *dev);
-
-/* 软件 I2C (bit-bang) 全地址扫描: 绕过硬件 I2C 外设诊断总线。
- * 把 PB6/PB7 切为开漏 GPIO 逐地址发 START+地址字节, 返回找到的地址数,
- * found 回填 (最多 max_found 个)。注意: 会复位 I2C1 外设。 */
-uint8_t SSD1306_BusScanBitBang(uint8_t *found, uint8_t max_found);
 
 /* 初始化并开显示, 返回 HAL_OK/HAL_ERROR */
 HAL_StatusTypeDef SSD1306_Init(SSD1306_t *dev);

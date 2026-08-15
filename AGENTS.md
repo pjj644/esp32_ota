@@ -58,10 +58,10 @@ $env:IDF_TOOLS_PATH="C:\Espressif\tools"
 
 ## OLED（SSD1306, I2C1 = PB6/SCL, PB7/SDA）
 
-- **F1 HAL 的 I2C `DevAddress` 必须传"左移一位的 8 位地址"（0x78 = 0x3C<<1）**。`I2C_7BIT_ADD_WRITE` 只清 bit0 不做移位（`stm32f1xx_hal_i2c.h:666`），HAL 文档也写明 "must be shifted to the left"。
-- **踩过的坑**：误传 7 位 0x3C → 总线发 0x3C → 硬件 I2C 永远 NAK → 被误判成"GD32 克隆硬件 I2C 坏"，引出 bit-bang 兜底 + 误判"面板是 32 行"（改 `0xA8 0x1F`、`SSD1306_Update` 只发 4 页）。**面板实为 64 行**：参考工程 `D:\tools1\LED3\MDK-ARM` 用 `0xA8 0x3F`（1/64）+ `0xDA 0x12` + 8 页 + 硬件 I2C（地址 0x78）在同一块板显示正常。
-- SSD1306 初始化关键项：`0xA8 0x3F`（1/64）、`0xDA 0x12`（alternate COM）、`0x20 0x02`（页寻址）、`0x8D 0x14`（电荷泵）；`SSD1306_Update` 整屏 8 页。
-- 地址统一约定：`SSD1306_t.addr` 存 7 位（0x3C/0x3D）；硬件路径用 `addr<<1` 喂 HAL，bit-bang 路径同样 `addr<<1`。`ssd1306.c` 的 bit-bang 兜底保留，只在硬件 I2C 真失败时触发。
+- **F1 HAL 的 I2C `DevAddress` 必须传"左移一位的 8 位地址"（0x78 = 0x3C<<1）**。`I2C_7BIT_ADD_WRITE` 只清 bit0 不做移位（`stm32f1xx_hal_i2c.h:666`），HAL 文档写明 "must be shifted to the left"。误传 7 位 0x3C → 硬件 I2C 永远 NAK，曾被误判成"GD32 克隆硬件 I2C 坏"。
+- **内容垂直重复的真正根因（v1.0.15 修复）**：`fonts.c` 的 `font_ascii_8x16` 每列 2 字节完全相同（8x8 列字节复制两份的错误编码），旧的 `DrawChar8x16` 把同一字节画到行 0-7 和行 8-15 → 每个字符出现两个叠置副本 = 整行文字上下重复。与屏/驱动/多路复用均无关（曾误查硬件 I2C、bit-bang、1/32 面板、预充电，全错）。修复：换用 LED3 的 `OLED_F8x16`（真 16px：前 8 字节=8 列上半、后 8 字节=8 列下半），`DrawChar8x16` 按 `glyph[col]` / `glyph[col+8]` 取上下字节。
+- SSD1306 初始化：`0xA8 0x3F`（1/64）、`0xDA 0x12`（alternate COM）、`0x8D 0x14`（电荷泵）；`SSD1306_Update` 整屏 8 页。面板是标准 64 行（1/64 正常）。
+- 地址约定：`SSD1306_t.addr` 存 7 位（0x3C/0x3D），硬件路径用 `addr<<1` 喂 HAL。
 - 本地调试用 DAPLink + USART1 直连即可烧录/看串口，不必走 OTA 循环。
 
 ## 文档
