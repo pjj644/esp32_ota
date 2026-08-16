@@ -37,8 +37,8 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-/* 应用版本: 发布时与 server/firmware/stm32_version.json 保持一致 */
-#define APP_VERSION_STR  "1.0.15"
+/* ????: ???? server/firmware/stm32_version.json ???? */
+#define APP_VERSION_STR  "1.0.19"
 
 /* USER CODE END PD */
 
@@ -62,7 +62,7 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/* OLED 开机画面: 显示项目基本信息 (需先 MX_I2C1_Init) */
+/* OLED ????: ???????? (?? MX_I2C1_Init) */
 static void oled_show_boot_info(void)
 {
   if (!SSD1306_Probe(&g_oled))
@@ -78,11 +78,10 @@ static void oled_show_boot_info(void)
   char line[24];
   snprintf(line, sizeof(line), "APP v%s", APP_VERSION_STR);
 
-  /* 64 行整屏: 三行信息 (y=0/16/32), 最末页放运行时间/心跳 */
+  /* 64 ???: ???? (y=0/16/32), ????????/?? */
   SSD1306_Clear(&g_oled);
   SSD1306_DrawString8x16(&g_oled, 0, 0, "ESP32-STM32 OTA");
   SSD1306_DrawString8x16(&g_oled, 0, 16, line);
-  SSD1306_DrawString16(&g_oled, 0, 32, "OLED 测试成功");
   SSD1306_Update(&g_oled);
 
   static char okmsg[40];
@@ -125,14 +124,14 @@ int main(void)
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
-  /* 启动横幅: ESP32 刷写完成后可通过 USART1(115200) 确认新固件已生效 */
+  /* ????: ESP32 ???????? USART1(115200) ???????? */
   {
     static uint8_t banner[] =
         "\r\n[STM32 esp32_test] APP v" APP_VERSION_STR " boot\r\n";
     HAL_UART_Transmit(&huart1, banner, sizeof(banner) - 1, 1000);
   }
 
-  /* OLED: 显示项目信息 + 运行状态 (找不到 OLED 时静默跳过, 不阻塞) */
+  /* OLED: ?????? + ???? (??? OLED ?????, ???) */
   g_oled.hi2c = &hi2c1;
   oled_show_boot_info();
 
@@ -157,13 +156,13 @@ int main(void)
         if (now - last_up >= 1000)
         {
           last_up = now;
-          /* 底部右侧: 运行时间 (先清区再重画, 避开第 3 行文字) */
+          /* ????: ???? (??????, ??? 3 ???) */
           SSD1306_FillRect(&g_oled, 72, 56, 48, 8, 0);
           snprintf(line, sizeof(line), "%05lus", (now - boot_tick) / 1000);
-          SSD1306_DrawString8x16(&g_oled, 72, 56, line);
+          SSD1306_DrawString8x16(&g_oled, 72, 48, line);
         }
 
-        /* 右下角心跳方块 */
+        /* ??????? */
         SSD1306_FillRect(&g_oled, 120, 56, 8, 8, blink);
         if (g_oled.present)
         {

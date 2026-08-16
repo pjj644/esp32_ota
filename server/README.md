@@ -64,6 +64,9 @@ idf.py -p COM? flash monitor
 
 ## 发布新固件（触发 OTA）
 
+推荐直接用 `scripts/build_esp32.ps1`（自动升版本 + 编译 + 部署 + 同步 version.json，含 sdkconfig 重生成修复）。
+手动流程如下：
+
 1. 在 `../sdkconfig.defaults` 中提升版本号，例如从 `1.0.1` 改为 `1.0.2`：
 
    ```
@@ -76,7 +79,7 @@ idf.py -p COM? flash monitor
    idf.py build
    ```
 
-3. 双击 `deploy_firmware.bat`，把 `build/local_test.bin` 复制到 `firmware/firmware.bin`。
+3. 把 `build/local_test.bin` 复制到 `firmware/firmware.bin`。
 
 4. 手动更新 `firmware/version.json`：
 
@@ -90,14 +93,16 @@ idf.py -p COM? flash monitor
 
 ## 发布 STM32 固件（触发 ESP32 -> STM32 刷写）
 
-1. 修改 STM32 代码后编译出 `.bin`（如 `arm-none-eabi-objcopy -O binary build/esp32_test.elf esp32_test.bin`）。
-2. 运行 `deploy_stm32.bat`（可传 bin 路径参数），把固件复制为 `firmware/stm32.bin`。
+1. 修改 STM32 代码后编译出 `.bin`（推荐 `scripts/build_stm32.ps1`，自动升版本 + 部署 + 同步 stm32_version.json）。
+   手动流程：`arm-none-eabi-objcopy -O binary build/esp32_test.elf esp32_test.bin`。
+2. 把固件复制为 `firmware/stm32.bin`。
 3. 手动更新 `firmware/stm32_version.json`（如 `{"version":"1.0.1"}`），版本必须比 ESP32
    NVS 里记录的上次版本新才会触发刷写。
 4. 等待 ESP32 下次检查（最多 60 秒），ESP32 会下载 → 通过 UART（AN3155 协议）擦写 STM32
    Flash → 复位，STM32 启动后串口打印 `APP vX.Y.Z boot` 即生效。
 
-> 接线、原理、调试步骤见仓库根目录 `STM32_WiFi_OTA_方案.md`。
+> 接线、原理、调试步骤见 `docs/STM32_WiFi_OTA_方案.md`；全部踩坑见 `docs/PROBLEMS.md`；
+> 发布/构建/烧录一键脚本见 `scripts/`（`build_esp32.ps1` / `build_stm32.ps1` / `update_all.ps1`）。
 
 ## 修复记录 / 已知坑
 
