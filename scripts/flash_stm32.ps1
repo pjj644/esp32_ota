@@ -22,10 +22,12 @@ try {
     Start-Sleep -Seconds 1
 
     Write-Host "== openocd 烧录 STM32: $Elf"
+    # openocd 用 Tcl 解析参数, 反斜杠会被当转义符吞掉 (D:esp32...), 路径必须转正斜杠
+    $elfFwd = $Elf.Replace('\', '/')
     $out = & $P.OPENOCD_BIN -s $P.OPENOCD_SCRIPTS `
         -f interface/cmsis-dap.cfg -f target/stm32f1x.cfg `
         -c "adapter speed 2000" `
-        -c "program $Elf verify reset exit" 2>&1
+        -c "program $elfFwd verify reset exit" 2>&1
     $out | ForEach-Object { $_ -replace '\x1b\[[0-9;]*m', '' } | ForEach-Object { Write-Host $_ }
     if ($LASTEXITCODE -ne 0) { throw "openocd 烧录失败 (见上方输出)" }
     Write-Host "== [OK] STM32 已烧录并复位"

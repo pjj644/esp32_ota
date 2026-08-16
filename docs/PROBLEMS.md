@@ -39,6 +39,13 @@ esptool 4 段、40MHz DIO、4MB：
 ### 1.6 没装 idf.py 到 PATH
 `idf.py` 不在 PATH。用 `$IDF_PYTHON_ENV\Scripts\python.exe $IDF_PATH\tools\idf.py build`。
 
+### 1.7 【CubeMX 重导出丢源文件】ssd1306.c/fonts.c 链接失败
+在 CubeMX 里重新生成代码/工程（或改 .ioc 保存）会**重写 `stm32/esp32_test/cmake/stm32cubemx/CMakeLists.txt`**，
+手工添加的 `Core/Src/ssd1306.c`、`Core/Src/fonts.c`（不在 .ioc 清单里）会被丢弃 →
+链接报 `undefined reference to SSD1306_*`。
+修复：`git checkout -- stm32/esp32_test/cmake/stm32cubemx/CMakeLists.txt` 恢复两行源文件即可。
+2026-08-16 实测一次（表现为 build_stm32.ps1 链接失败）。
+
 ---
 
 ## 2. OTA 机制（最易误判"卡住"）
@@ -121,7 +128,9 @@ Get 应答含命令表 `79 0B 10 00 01 02 11 21 31 43 63 73 82 92 79`（同步�
 - 烧录: `openocd -s <scripts> -f interface/cmsis-dap.cfg -f target/stm32f1x.cfg
   -c "adapter speed 2000" -c "program <elf> verify reset exit"`
 - 读寄存器/验证: `init` → `halt` → `reg pc` → `mdw 0x08000000 4`
-- **dump_image 的路径必须用正斜杠**（`C:/...`），反斜杠会被吞掉报 "couldn't open"。
+- **传给 openocd 的任何路径必须用正斜杠**（`C:/...`）——openocd 用 Tcl 解析，反斜杠被当
+  转义符吞掉（`D:esp32espproject...`），`program`/`dump_image` 都会报 "couldn't open"。
+  `scripts/flash_stm32.ps1` 已自动转换。
 - **`reset halt` 可能超时**（"timed out while waiting for target halted"），用 `halt` 代替即可。
 - openocd 输出带 ANSI 转义序列，解析输出前先 `-replace '\x1b\[[0-9;]*m',''`。
 - 接口就绪时会打印 `nRESET = 0` 属正常，不代表复位被拉死。

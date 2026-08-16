@@ -39,7 +39,11 @@ local_test/
 | 发布/构建/烧录/监视脚本 | `scripts/`（见下） |
 | 服务器 API/发布流程 | `server/README.md` |
 
-## scripts/ 脚本（PowerShell 7，自动 Bypass 执行策略双击可跑）
+## scripts/ 脚本（PowerShell 7，每个脚本配同名 .bat 双击包装器）
+
+> Windows 默认执行策略 Restricted 禁止直接运行 .ps1——**双击 .bat 或运行
+> `.\scripts\xxx.bat`**（内部 `pwsh -ExecutionPolicy Bypass`），或在 pwsh 里
+> `Set-ExecutionPolicy -Scope Process Bypass` 后直接跑 .ps1。
 
 | 脚本 | 功能 |
 |---|---|
