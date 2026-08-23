@@ -44,7 +44,7 @@ static void ssd1306_write_data(SSD1306_t *dev, uint8_t *data, uint16_t len)
 
 uint8_t SSD1306_Probe(SSD1306_t *dev)
 {
-    /* 与 LED3 OLED_CheckConnection 一致: 发 [0x00, 0xAE] 一帧探测 (0xAE=关显示, 无害)。
+    /*  发 [0x00, 0xAE] 一帧探测 (0xAE=关显示, 无害)。
      * F1 HAL 地址传 0x78/0x7A (= 0x3C/0x3D << 1)。 */
     uint8_t check[2] = {0x00, 0xAE};
     if (HAL_I2C_Master_Transmit(dev->hi2c, 0x78, check, 2, 100) == HAL_OK) {
@@ -127,6 +127,34 @@ HAL_StatusTypeDef SSD1306_Update(SSD1306_t *dev)
         ssd1306_write_data(dev, &dev->buffer[page * SSD1306_WIDTH], SSD1306_WIDTH);
     }
     return HAL_OK;
+}
+
+void SSD1306_DrawChar6x8(SSD1306_t *dev, uint8_t x, uint8_t y, char ch)
+{
+    if (ch < 0x20 || ch > 0x7E) {
+        ch = '?';
+    }
+    const uint8_t *glyph = font_ascii_6x8[ch - 0x20];
+    for (uint8_t col = 0; col < 6; col++) {
+        uint8_t b = glyph[col];
+        for (uint8_t row = 0; row < 8; row++) {
+            if (b & (1u << row)) {
+                SSD1306_DrawPixel(dev, (uint8_t)(x + col), (uint8_t)(y + row), 1);
+            }
+        }
+    }
+}
+
+void SSD1306_DrawString6x8(SSD1306_t *dev, uint8_t x, uint8_t y, const char *str)
+{
+    while (*str) {
+        if (x + 6 > SSD1306_WIDTH) {
+            break;
+        }
+        SSD1306_DrawChar6x8(dev, x, y, *str);
+        x = (uint8_t)(x + 6);
+        str++;
+    }
 }
 
 void SSD1306_DrawChar8x16(SSD1306_t *dev, uint8_t x, uint8_t y, char ch)

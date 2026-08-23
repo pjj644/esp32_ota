@@ -171,3 +171,22 @@ GBK 控制台显示 UTF-8 → 如 `�汾���`。**用 ASCII 关键词 grep
 `Start-Process python idf_monitor.py -ArgumentList "-p",COM6,"-b","115200","--timestamps",<elf>
 -RedirectStandardOutput <log>`；monitor 连接时会把设备复位（日志从 boot 开始）。
 用 `scripts/monitor_esp32.ps1`。抓日志前先确认 monitor 进程活着，再 Start-Sleep 等周期，避免空轮。
+
+---
+
+## 8. MPU-6050（I2C2 = PB10/SCL, PB11/SDA）与姿态解算
+
+### 8.1 F1 HAL 地址与突发读取
+MPU-6050 挂载于硬件 I2C2。默认地址为 0x68（AD0=GND）或 0x69（AD0=VCC）。
+HAL 函数（`HAL_I2C_Mem_Read` / `HAL_I2C_Mem_Write`）中的 `DevAddress` 同样必须传入左移 1 位的 8 位地址（`0xD0` 或 `0xD2`）。
+读取传感器数据时使用从 `0x3B (ACCEL_XOUT_H)` 开始的 14 字节单次突发传输（Burst Read），保证加速度、温度、陀螺仪数据的原子性与高吞吐。
+
+### 8.2 newlib-nano 浮点 snprintf 必须加 `-u _printf_float`
+GCC 链接参数使用了 `--specs=nano.specs` 时，默认为了减小固件体积移除了浮点格式化输出支持（`%f` 输出为空或格式错误）。
+必须在 `stm32/esp32_test/CMakeLists.txt` 中添加：
+`target_link_options(${CMAKE_PROJECT_NAME} PRIVATE -u _printf_float)`。
+
+### 8.3 零偏校准与互补滤波
+- 上电初始化时采集 100 组陀螺仪静态采样计算零偏 `gyro_bias`，消除静止漂移。
+- 姿态角解算采用互补滤波（`alpha = 0.96`），融合加速度计低频重力向量与陀螺仪高频角速度积分，兼顾响应速度与抗动态震动能力。
+

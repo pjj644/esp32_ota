@@ -63,7 +63,10 @@ local_test/
 - **版本必须"严格大于"才动作**，相等=跳过（每 60s 一行，像卡死）。验证等 ≥70s。
 - **OTA 触发**: ESP32 = 三处同步(sdkconfig.defaults + version.json + 重新 build 部署)；
   STM32 = 版本 > 设备 NVS `stm32_ota/last_ver`，服务器实时读文件无需重启。
-- **接线固定**: GPIO17→PA10, GPIO16→PA9, GPIO4→BOOT0, GPIO5→NRST, 共地。别复用。
+- **接线固定**:
+  - OTA/UART: GPIO17→PA10(U1RX), GPIO16→PA9(U1TX), GPIO4→BOOT0, GPIO5→NRST, 共地。别复用。
+  - OLED (I2C1): PB6→SCL, PB7→SDA (0x3C, 128x64 SSD1306)。
+  - MPU6050 (I2C2): PB10→SCL, PB11→SDA (0x68, 6轴IMU, 互补滤波解算 Roll/Pitch/Yaw并在OLED实时显示)。
 - **DAPLink VCOM TX 绝不能接 PA10**（PROBLEMS.md §5.1，最大的坑）。
 - 串口: COM6=ESP32(CH340, 烧录460800/日志115200)，COM3=DAPLink VCOM(收 STM32 日志@115200)。
 - PC IP（当前 192.168.1.11）改动需同步 `main/main.c` 的 LOCAL_HOST + `config/paths.ps1` 并重烧。

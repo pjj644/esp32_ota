@@ -39,7 +39,11 @@ void SSD1306_DrawPixel(SSD1306_t *dev, uint8_t x, uint8_t y, uint8_t on);
 /* 整屏上传 */
 HAL_StatusTypeDef SSD1306_Update(SSD1306_t *dev);
 
-/* 8x16 半角字符 (8px 宽) */
+/* 6x8 半角字符 (6px 宽, 8px 高, 128x64 屏幕每行 21 字符, 全屏可放 8 行) */
+void SSD1306_DrawChar6x8(SSD1306_t *dev, uint8_t x, uint8_t y, char ch);
+void SSD1306_DrawString6x8(SSD1306_t *dev, uint8_t x, uint8_t y, const char *str);
+
+/* 8x16 半角字符 (8px 宽, 16px 高, 128x64 屏幕每行 16 字符, 全屏 4 行) */
 void SSD1306_DrawChar8x16(SSD1306_t *dev, uint8_t x, uint8_t y, char ch);
 void SSD1306_DrawString8x16(SSD1306_t *dev, uint8_t x, uint8_t y, const char *str);
 

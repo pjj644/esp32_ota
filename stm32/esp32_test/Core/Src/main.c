@@ -26,7 +26,9 @@
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
 #include <string.h>
+#include <math.h>
 #include "ssd1306.h"
+#include "mpu6050.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -37,8 +39,8 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 
-/* ????: ???? server/firmware/stm32_version.json ???? */
-#define APP_VERSION_STR  "1.0.19"
+/* ?????: ? server/firmware/stm32_version.json ???? */
+#define APP_VERSION_STR  "1.2.0"
 
 /* USER CODE END PD */
 
@@ -51,6 +53,7 @@
 
 /* USER CODE BEGIN PV */
 static SSD1306_t g_oled;
+static MPU6050_t g_mpu;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -62,31 +65,76 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-/* OLED ????: ???????? (?? MX_I2C1_Init) */
-static void oled_show_boot_info(void)
+static void oled_print_8lines(const char *lines[8])
 {
-  if (!SSD1306_Probe(&g_oled))
-  {
-    g_oled.present = 0;
-    static const char msg[] = "[OLED] SSD1306 not found (check I2C wiring)\r\n";
-    HAL_UART_Transmit(&huart1, (uint8_t *)msg, sizeof(msg) - 1, 1000);
-    return;
-  }
-  g_oled.present = 1;
-  SSD1306_Init(&g_oled);
-
-  char line[24];
-  snprintf(line, sizeof(line), "APP v%s", APP_VERSION_STR);
-
-  /* 64 ???: ???? (y=0/16/32), ????????/?? */
+  if (!g_oled.present) return;
   SSD1306_Clear(&g_oled);
-  SSD1306_DrawString8x16(&g_oled, 0, 0, "ESP32-STM32 OTA");
-  SSD1306_DrawString8x16(&g_oled, 0, 16, line);
+  for (uint8_t i = 0; i < 8; i++) {
+    if (lines[i] && lines[i][0] != '\0') {
+      SSD1306_DrawString6x8(&g_oled, 1, (uint8_t)(i * 8), lines[i]);
+    }
+  }
   SSD1306_Update(&g_oled);
+}
 
-  static char okmsg[40];
-  snprintf(okmsg, sizeof(okmsg), "[OLED] found @0x%02X (hw-i2c)\r\n", g_oled.addr);
-  HAL_UART_Transmit(&huart1, (uint8_t *)okmsg, strlen(okmsg), 1000);
+static void init_peripherals(void)
+{
+  /* 1. OLED 初始化 (I2C1: PB6=SCL, PB7=SDA) */
+  g_oled.hi2c = &hi2c1;
+  HAL_Delay(50);
+  if (SSD1306_Probe(&g_oled)) {
+    g_oled.present = 1;
+    SSD1306_Init(&g_oled);
+    static char msg[48];
+    snprintf(msg, sizeof(msg), "[OLED] found @0x%02X (hw-i2c1)\r\n", g_oled.addr);
+    HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), 1000);
+  } else {
+    g_oled.present = 0;
+    static const char msg[] = "[OLED] not found on I2C1 (PB6/PB7)\r\n";
+    HAL_UART_Transmit(&huart1, (uint8_t *)msg, sizeof(msg) - 1, 1000);
+  }
+
+  /* 2. MPU6050 初始化 (I2C2: PB10=SCL, PB11=SDA) */
+  g_mpu.hi2c = &hi2c2;
+  HAL_Delay(50);
+  if (MPU6050_Probe(&g_mpu)) {
+    static char msg[64];
+    snprintf(msg, sizeof(msg), "[MPU6050] found @0x%02X (hw-i2c2), initializing...\r\n", g_mpu.addr);
+    HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), 1000);
+
+    const char *calib_info[8] = {
+      "-- MPU6050 v" APP_VERSION_STR " --",
+      "",
+      "  Calibrating Gyro...",
+      "  Keep board still",
+      "",
+      "  Samples: 100",
+      "  Please wait...",
+      ""
+    };
+    oled_print_8lines(calib_info);
+
+    if (MPU6050_Init(&g_mpu) == HAL_OK) {
+      MPU6050_CalibrateGyro(&g_mpu, 100);
+      snprintf(msg, sizeof(msg), "[MPU6050] Gyro bias: X=%.1f Y=%.1f Z=%.1f\r\n",
+               g_mpu.gyro_bias_x, g_mpu.gyro_bias_y, g_mpu.gyro_bias_z);
+      HAL_UART_Transmit(&huart1, (uint8_t *)msg, strlen(msg), 1000);
+    }
+  } else {
+    static const char msg[] = "[MPU6050] not found on I2C2 (PB10/PB11)\r\n";
+    HAL_UART_Transmit(&huart1, (uint8_t *)msg, sizeof(msg) - 1, 1000);
+    const char *err_info[8] = {
+      "-- MPU6050 v" APP_VERSION_STR " --",
+      "",
+      " [ERROR] Sensor Missing",
+      " Check I2C2 Wiring:",
+      " - SCL -> PB10",
+      " - SDA -> PB11",
+      "",
+      " Retrying..."
+    };
+    oled_print_8lines(err_info);
+  }
 }
 
 /* USER CODE END 0 */
@@ -122,55 +170,83 @@ int main(void)
   MX_GPIO_Init();
   MX_USART1_UART_Init();
   MX_I2C1_Init();
+  MX_USART2_UART_Init();
+  MX_I2C2_Init();
   /* USER CODE BEGIN 2 */
 
-  /* ????: ESP32 ???????? USART1(115200) ???????? */
   {
     static uint8_t banner[] =
         "\r\n[STM32 esp32_test] APP v" APP_VERSION_STR " boot\r\n";
     HAL_UART_Transmit(&huart1, banner, sizeof(banner) - 1, 1000);
   }
 
-  /* OLED: ?????? + ???? (??? OLED ?????, ???) */
-  g_oled.hi2c = &hi2c1;
-  oled_show_boot_info();
+  init_peripherals();
 
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
+  uint32_t last_oled_tick = 0;
+  uint32_t last_uart_tick = 0;
+  uint32_t last_probe_tick = 0;
+
+  while (1)
   {
-    uint32_t boot_tick = HAL_GetTick();
-    uint32_t last_ui = 0, last_up = 0;
-    uint8_t blink = 0;
-    char line[24];
+    /* USER CODE END WHILE */
 
-    while (1)
-    {
-      uint32_t now = HAL_GetTick();
-      if (now - last_ui >= 500)
-      {
-        last_ui = now;
-        blink = (uint8_t)(1 - blink);
+    /* USER CODE BEGIN 3 */
+    uint32_t now = HAL_GetTick();
 
-        if (now - last_up >= 1000)
-        {
-          last_up = now;
-          /* ????: ???? (??????, ??? 3 ???) */
-          SSD1306_FillRect(&g_oled, 72, 56, 48, 8, 0);
-          snprintf(line, sizeof(line), "%05lus", (now - boot_tick) / 1000);
-          SSD1306_DrawString8x16(&g_oled, 72, 48, line);
-        }
-
-        /* ??????? */
-        SSD1306_FillRect(&g_oled, 120, 56, 8, 8, blink);
-        if (g_oled.present)
-        {
-          SSD1306_Update(&g_oled);
+    if (!g_mpu.present) {
+      /* 若启动时未检测到传感器，每隔 1000ms 尝试重新探测 */
+      if (now - last_probe_tick >= 1000) {
+        last_probe_tick = now;
+        if (MPU6050_Probe(&g_mpu)) {
+          init_peripherals();
         }
       }
       HAL_Delay(50);
+      continue;
     }
+
+    /* 1. 读取 MPU6050 传感器数据并执行互补滤波姿态解算 */
+    if (MPU6050_Update(&g_mpu) != HAL_OK) {
+      HAL_Delay(10);
+      continue;
+    }
+
+    /* 2. 刷新 OLED 屏幕 (每 50ms / 20Hz, 8 行 6x8 紧凑字模，无截断) */
+    if (now - last_oled_tick >= 50) {
+      last_oled_tick = now;
+
+      char l[8][24];
+      snprintf(l[0], sizeof(l[0]), "-- MPU6050 v%s --", APP_VERSION_STR);
+      snprintf(l[1], sizeof(l[1]), "Roll : %+6.1f deg", g_mpu.roll);
+      snprintf(l[2], sizeof(l[2]), "Pitch: %+6.1f deg", g_mpu.pitch);
+      snprintf(l[3], sizeof(l[3]), "Yaw  : %+6.1f deg", g_mpu.yaw);
+      snprintf(l[4], sizeof(l[4]), "A:%+.2f %+.2f %+.2f", g_mpu.ax, g_mpu.ay, g_mpu.az);
+      snprintf(l[5], sizeof(l[5]), "G:%+4.0f %+4.0f %+4.0f", g_mpu.gx, g_mpu.gy, g_mpu.gz);
+      snprintf(l[6], sizeof(l[6]), "Temp : %4.1f C", g_mpu.temp_c);
+      snprintf(l[7], sizeof(l[7]), "I2C2 : 0x%02X [ONLINE]", g_mpu.addr);
+
+      const char *ptrs[8] = {l[0], l[1], l[2], l[3], l[4], l[5], l[6], l[7]};
+      oled_print_8lines(ptrs);
+    }
+
+    /* 3. 输出串口遥测日志到 USART1 (每 200ms / 5Hz) */
+    if (now - last_uart_tick >= 200) {
+      last_uart_tick = now;
+      static char tele_buf[128];
+      int n = snprintf(tele_buf, sizeof(tele_buf),
+               "[MPU] R:%+6.2f | P:%+6.2f | Y:%+6.2f | T:%4.1fC | Ax:%+5.2f Ay:%+5.2f Az:%+5.2f\r\n",
+               g_mpu.roll, g_mpu.pitch, g_mpu.yaw, g_mpu.temp_c,
+               g_mpu.ax, g_mpu.ay, g_mpu.az);
+      if (n > 0) {
+        HAL_UART_Transmit(&huart1, (uint8_t *)tele_buf, (uint16_t)n, 100);
+      }
+    }
+
+    HAL_Delay(10); /* ~100Hz 解算主循环 */
   }
   /* USER CODE END 3 */
 }

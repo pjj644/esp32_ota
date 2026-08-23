@@ -44,7 +44,9 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # Add user sources here
+    Core/Src/ssd1306.c
+    Core/Src/fonts.c
+    Core/Src/mpu6050.c
 )
 
 # Add include paths
@@ -56,6 +58,9 @@ target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE
 target_compile_definitions(${CMAKE_PROJECT_NAME} PRIVATE
     # Add user defined symbols
 )
+
+# Enable float support in printf/sprintf with newlib-nano
+target_link_options(${CMAKE_PROJECT_NAME} PRIVATE -u _printf_float)
 
 # Remove wrong libob.a library dependency when using cpp files
 list(REMOVE_ITEM CMAKE_C_IMPLICIT_LINK_LIBRARIES ob)

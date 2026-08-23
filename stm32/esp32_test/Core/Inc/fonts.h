@@ -3,6 +3,9 @@
 
 #include <stdint.h>
 
+/* 95 个可打印 ASCII (0x20..0x7E), 每字符 6 字节 (6x8, 列优先, bit0=顶) */
+extern const uint8_t font_ascii_6x8[95][6];
+
 /* 95 个可打印 ASCII (0x20..0x7E), 每字符 16 字节 (8x16, 列优先, bit0=顶) */
 extern const uint8_t font_ascii_8x16[95][16];
 
