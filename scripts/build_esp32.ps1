@@ -30,9 +30,10 @@ try {
         Set-Esp32Version $new
     }
 
-    # ===== 2) 编译 (含 sdkconfig 强制重生成) =====
+    # ===== 2) 编译 (含 sdkconfig 强制重生成 + LOCAL_HOST 一致性检查) =====
     $idfPy = Get-IdfPy
     Sync-Sdkconfig $new
+    [void](Test-LocalHostConsistency)
     Write-Host "== 编译 ESP32 ..."
     & $idfPy[0] $idfPy[1] build
     if ($LASTEXITCODE -ne 0) { throw "idf.py build 失败" }

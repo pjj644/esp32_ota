@@ -84,6 +84,32 @@ function Set-Stm32Version {
     Set-Content -Encoding ascii $P.STM32_VER_JSON ('{"version":"' + $ver + '"}')
 }
 
+# 检查 main/main.c 的 LOCAL_HOST 是否与 config/paths.ps1 一致 (OTA 封装后仍需一致)
+function Test-LocalHostConsistency {
+    $m = Select-String -Pattern '#define\s+LOCAL_HOST\s+"([^"]+)"' -Path $P.ESP32_MAIN_C | Select-Object -First 1
+    if ($m -and $m.Matches.Count -gt 0 -and $m.Matches[0].Groups.Count -ge 2) {
+        $mainHost = $m.Matches[0].Groups[1].Value
+        if ($mainHost -ne $P.LOCAL_HOST) {
+            Write-Host ("== [警告] LOCAL_HOST 不一致: config/paths.ps1=" + $P.LOCAL_HOST + " vs main/main.c=" + $mainHost + " -> OTA 将连不上, 请手动同步或运行 Sync-LocalHost") -ForegroundColor Yellow
+            return $false
+        }
+    }
+    return $true
+}
+
+# 同步 main/main.c 的 LOCAL_HOST 为 config/paths.ps1 的值 (可选, 改 IP 时一键修复)
+function Sync-LocalHost {
+    $m = Select-String -Pattern '#define\s+LOCAL_HOST\s+"([^"]+)"' -Path $P.ESP32_MAIN_C | Select-Object -First 1
+    if ($m) {
+        $mainHost = $m.Matches[0].Groups[1].Value
+        if ($mainHost -ne $P.LOCAL_HOST) {
+            (Get-Content $P.ESP32_MAIN_C) -replace '#define\s+LOCAL_HOST\s+"[^"]+"', ('#define LOCAL_HOST           "' + $P.LOCAL_HOST + '"') |
+                Set-Content -Encoding ascii $P.ESP32_MAIN_C
+            Write-Host ("== [提示] 已同步 main.c LOCAL_HOST: " + $mainHost + " -> " + $P.LOCAL_HOST) -ForegroundColor Green
+        }
+    }
+}
+
 # 杀掉残留进程 (node server.js / idf_monitor / openocd), 防止串口被占
 function Stop-Residual {
     param([string]$pattern)

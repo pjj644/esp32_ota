@@ -4,7 +4,7 @@
  *  - GPIO2 板载 LED 心跳闪烁
  *  - 启动 WiFi STA，连上后周期打印 IP 与剩余堆内存
  *  - 后台任务每 10s 调一次 http://<本地电脑>:8888/hello
- *
+ *  - 双 OTA (ESP32 + STM32) 由 ota_manager 一键托管
  */
 #include <inttypes.h>
 #include "freertos/FreeRTOS.h"
@@ -20,25 +20,54 @@
 #include "wifi.h"
 #include "http_client.h"
 #include "ota.h"
-#include "stm32_ota.h"
+#include "ota_manager.h"
 
 static const char *TAG = "self_test";
 
-/* 本地电脑测试/OTA 服务 —— 若 IP 变化, 请改成当前电脑的局域网 IP */
+/* 本地 OTA / HTTP 测试服务器 —— IP 变化时改这里即可 (同步 config/paths.ps1) */
 #define LOCAL_HOST           "192.168.1.11"
 #define LOCAL_PORT           8888
 #define LOCAL_PATH           "/hello"
 #define HTTP_TEST_PERIOD_MS  10000
 
-/* OTA: 每 60s 向本地电脑查询一次 manifest, 有新版本则自动更新并重启 */
-#define OTA_CHECK_PERIOD_MS  60000
-
-/* STM32 OTA: 与 ESP32 OTA 同周期检查, 由 stm32_ota_task 调 stm32_ota_check_and_update() */
-#define STM32_OTA_CHECK_PERIOD_MS  60000
-
 static void http_test_task(void *pvParameters);
-static void ota_task(void *pvParameters);
-static void stm32_ota_task(void *pvParameters);
+static void print_chip_info(void);
+
+void app_main(void)
+{
+    print_chip_info();
+    led_init();
+
+    ESP_LOGI(TAG, "connecting to WiFi SSID=\"%s\"", WIFI_SSID);
+    esp_err_t err = wifi_sta_init(WIFI_SSID, WIFI_PASS);
+    if (err == ESP_OK) {
+        err = wifi_sta_wait_connected(15000);
+    }
+
+    char ip[16];
+    if (err == ESP_OK) {
+        wifi_sta_get_ip_str(ip, sizeof(ip));
+        ESP_LOGI(TAG, "WiFi connected, IP=%s", ip);
+
+        xTaskCreate(http_test_task, "http_test", 4096, NULL, 5, NULL);
+        /* 一行启动双 OTA: ESP32 + STM32 各自后台轮询, 周期/延时走默认值 (60s/10s) */
+        err = ota_manager_start_simple(LOCAL_HOST, LOCAL_PORT);
+        if (err != ESP_OK) {
+            ESP_LOGE(TAG, "OTA 管理器启动失败: %s", esp_err_to_name(err));
+        }
+    } else {
+        ESP_LOGE(TAG, "WiFi unavailable: %s", esp_err_to_name(err));
+    }
+
+    uint32_t tick = 0;
+    while (1) {
+        int level = led_toggle();
+        wifi_sta_get_ip_str(ip, sizeof(ip));
+        ESP_LOGI(TAG, "[heartbeat #%" PRIu32 "] LED=%d  IP=%s  free_heap=%" PRIu32,
+                 tick++, level, ip, esp_get_free_heap_size());
+        vTaskDelay(pdMS_TO_TICKS(2000));
+    }
+}
 
 static void print_chip_info(void)
 {
@@ -72,51 +101,7 @@ static void print_chip_info(void)
     ESP_LOGI(TAG, "==========================================================");
 }
 
-void app_main(void)
-{
-    print_chip_info();
-    led_init();
-
-    /* 启动 WiFi，最多等 15 秒看是否拿到 IP */
-    ESP_LOGI(TAG, "connecting to WiFi SSID=\"%s\"", WIFI_SSID);
-    esp_err_t err = wifi_sta_init(WIFI_SSID, WIFI_PASS);
-    if (err == ESP_OK) {
-        err = wifi_sta_wait_connected(15000);
-    }
-
-    char ip[16];
-    if (err == ESP_OK) {
-        wifi_sta_get_ip_str(ip, sizeof(ip));
-        ESP_LOGI(TAG, "WiFi connected, IP=%s", ip);
-
-        /* WiFi 通了即视为健康检查通过: 确认当前固件 valid, 取消回滚。
-         * (若本次是 OTA 后首启, 这一步阻止 bootloader 下次回退到旧固件。) */
-        ota_confirm_running_app();
-
-        /* HTTP 测试独立成任务, 不阻塞 2s 心跳 */
-        xTaskCreate(http_test_task, "http_test", 4096, NULL, 5, NULL);
-        /* OTA 检查任务: 栈要大 (TLS/缓冲), 用 8KB */
-        xTaskCreate(ota_task, "ota_check", 8192, NULL, 4, NULL);
-        /* STM32 OTA 检查任务: 下载整块固件到堆 + UART 刷写, 栈 8KB */
-        xTaskCreate(stm32_ota_task, "stm32_ota", 8192, NULL, 3, NULL);
-    } else {
-        ESP_LOGE(TAG, "WiFi unavailable: %s", esp_err_to_name(err));
-    }
-
-    uint32_t tick = 0;
-    while (1) {
-        int level = led_toggle();
-        wifi_sta_get_ip_str(ip, sizeof(ip));
-        ESP_LOGI(TAG, "[heartbeat #%" PRIu32 "] LED=%d  IP=%s  free_heap=%" PRIu32,
-                 tick++, level, ip, esp_get_free_heap_size());
-        vTaskDelay(pdMS_TO_TICKS(2000));
-    }
-}
-
-/*
- * http_test_task: 独立 FreeRTOS 任务, 每 HTTP_TEST_PERIOD_MS 调一次
- * 本地电脑:8888/hello。失败仅打日志, 不影响心跳任务。
- */
+/* http_test_task: 每 HTTP_TEST_PERIOD_MS 调一次 LOCAL_HOST:LOCAL_PORT/LOCAL_PATH */
 static void http_test_task(void *pvParameters)
 {
     (void)pvParameters;
@@ -126,55 +111,11 @@ static void http_test_task(void *pvParameters)
     while (1) {
         esp_err_t err = http_client_get_text_hp(
             LOCAL_HOST, LOCAL_PORT, LOCAL_PATH, buf, sizeof(buf), &status);
-
         if (err == ESP_OK) {
             ESP_LOGI(TAG, "<- 200: %s", buf);
         } else {
             ESP_LOGE(TAG, "local server unreachable: %s", esp_err_to_name(err));
         }
-
         vTaskDelay(pdMS_TO_TICKS(HTTP_TEST_PERIOD_MS));
-    }
-}
-
-/*
- * ota_task: 每 OTA_CHECK_PERIOD_MS 向本地电脑查一次固件 manifest。
- * 若有新版本, ota_check_and_update() 内部会下载、写另一槽、重启 (不返回)。
- * 无新版本或失败仅打日志, 不影响心跳。
- */
-static void ota_task(void *pvParameters)
-{
-    (void)pvParameters;
-    /* 开机先等一会, 让 http_test / 心跳先稳定, 也给本地服务端上线留时间 */
-    vTaskDelay(pdMS_TO_TICKS(10000));
-
-    while (1) {
-        ESP_LOGI(TAG, "OTA: 检查更新...");
-        esp_err_t err = ota_check_and_update(LOCAL_HOST, LOCAL_PORT);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "OTA: 本轮未更新 (%s)", esp_err_to_name(err));
-        }
-        vTaskDelay(pdMS_TO_TICKS(OTA_CHECK_PERIOD_MS));
-    }
-}
-
-/*
- * stm32_ota_task: 每 STM32_OTA_CHECK_PERIOD_MS 向本地电脑查一次 STM32 固件 manifest。
- * 有新版本时 stm32_ota_check_and_update() 内部会: 下载 -> 进 Bootloader -> 擦除/写入 -> 复位。
- * 失败仅打日志 (NVS 版本不更新, 下轮重试), 不影响其他任务。
- */
-static void stm32_ota_task(void *pvParameters)
-{
-    (void)pvParameters;
-    /* 开机先等一会, 给 ESP32 自身 OTA 和本地服务端留时间 */
-    vTaskDelay(pdMS_TO_TICKS(10000));
-
-    while (1) {
-        ESP_LOGI(TAG, "STM32 OTA: 检查更新...");
-        esp_err_t err = stm32_ota_check_and_update(LOCAL_HOST, LOCAL_PORT);
-        if (err != ESP_OK) {
-            ESP_LOGW(TAG, "STM32 OTA: 本轮未更新 (%s)", esp_err_to_name(err));
-        }
-        vTaskDelay(pdMS_TO_TICKS(STM32_OTA_CHECK_PERIOD_MS));
     }
 }
