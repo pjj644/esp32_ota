@@ -10,7 +10,7 @@ extern "C" {
 #endif
 
 /* TODO: 改成 ESP32 与本地电脑共同连接的 WiFi AP */
-#define WIFI_SSID  "YOUR_WIFI_SSID"//"YOUR_WIFI_SSID"
+#define WIFI_SSID  "YOUR_WIFI_SSID"
 #define WIFI_PASS  "YOUR_WIFI_PASSWORD"
 /* 最大重连次数。超过后 wifi_sta_wait_connected() 会返回失败而不是无限阻塞。 */
 #ifndef WIFI_STA_MAX_RETRY
